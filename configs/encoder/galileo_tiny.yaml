@@ -1,0 +1,24 @@
+_target_: getsits.encoders.galileo.GalileoTiny
+model_name: "Galileo-Tiny"
+encoder_weights: ./pretrained_models/galileo_tiny.pt
+download_url: null 
+
+embed_dim: 192
+input_size: 224
+patch_size: 16
+pretrained_patch_size: 8
+depth: 12
+num_heads: 3 
+mlp_ratio: 4 
+positional_encoding: "normal"
+
+input_bands: ${dataset.bands}
+
+
+output_layers:
+  - 3
+  - 5
+  - 7
+  - 11
+
+output_dim: 192

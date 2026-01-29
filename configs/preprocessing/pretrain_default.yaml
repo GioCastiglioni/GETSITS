@@ -1,0 +1,15 @@
+train:
+    _target_: getsits.engine.data_preprocessor.Preprocessor
+    preprocessor_cfg:
+        - _target_: getsits.engine.data_preprocessor.RandomCropNoTarget
+        - _target_: getsits.engine.data_preprocessor.BandFilter
+        - _target_: getsits.engine.data_preprocessor.NormalizeMeanStd
+        - _target_: getsits.engine.data_preprocessor.BandPadding
+
+val:
+    _target_: getsits.engine.data_preprocessor.Preprocessor
+    preprocessor_cfg:
+        - _target_: getsits.engine.data_preprocessor.CenterCropNoTarget
+        - _target_: getsits.engine.data_preprocessor.BandFilter
+        - _target_: getsits.engine.data_preprocessor.NormalizeMeanStd
+        - _target_: getsits.engine.data_preprocessor.BandPadding

@@ -1,0 +1,30 @@
+_target_:  getsits.encoders.resnet18.ResNet18
+encoder_weights: ./pretrained_models/B13_rn18_moco_0099_ckpt.pth
+download_url: https://drive.google.com/uc?id=1iWLm7ljQ6tKZiVp47pJUPDe3Un0BUd9o&export=download&aconfirm=yes
+input_size: ${dataset.img_size}
+multi_temporal: False
+topology: [64, 128, 256, 512]
+positional_encoding: "normal"
+
+input_bands:
+  optical:
+    - B1
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B9
+    - B10
+    - B11
+    - B12
+
+
+output_dim:
+  - 64
+  - 128
+  - 256
+  - 512

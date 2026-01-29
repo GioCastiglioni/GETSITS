@@ -1,0 +1,123 @@
+
+_target_: getsits.datasets.bigearthnet.BigearthNetFull
+dataset_name: BigearthNet
+root_path: ./datasets/bigearthnet
+download_url: null
+auto_download: false
+img_size: 120
+multi_temporal: 1
+multi_modal: false
+fold_config: 1
+support_test: true
+ignore_index: -1
+num_classes: 19
+classes:
+- "Urban fabric"
+- "Industrial or commercial units"
+- "Arable land"
+- "Permanent crops"
+- "Pastures"
+- "Complex cultivation patterns"
+- "Land for agriculture and natural vegetation"
+- "Agro-forestry areas"
+- "Broad-leaved forest"
+- "Coniferous forest"
+- "Mixed forest"
+- "Natural grassland and sparsely vegetated areas"
+- "Moors, heathland and sclerophyllous vegetation"
+- "Transitional woodland, shrub"
+- "Beaches, dunes, sands"
+- "Inland wetlands"
+- "Coastal wetlands"
+- "Inland waters"
+- "Marine waters"
+distribution:
+- 0.14665
+- 0.02455
+- 0.39075
+- 0.0636
+- 0.1917
+- 0.24015
+- 0.2913
+- 0.05945
+- 0.3317
+- 0.27595
+- 0.3063
+- 0.0386
+- 0.03235
+- 0.31435
+- 0.00315
+- 0.0431
+- 0.0028
+- 0.0995
+- 0.12535
+bands:
+  optical:
+  - B1
+  - B2
+  - B3
+  - B4
+  - B5
+  - B6
+  - B7
+  - B8
+  - B8A
+  - B9
+  - B11
+  - B12
+data_mean:
+  optical:
+  - 362.0287
+  - 419.1002
+  - 618.3747
+  - 606.2697
+  - 981.2152
+  - 1886.598
+  - 2203.2218
+  - 2344.7288
+  - 2412.2299
+  - 2414.3639
+  - 1733.3761
+  - 1090.9004
+data_std:
+  optical:
+  - 471.3869
+  - 504.3273
+  - 515.6504
+  - 628.8097
+  - 659.575
+  - 1010.7616
+  - 1202.2655
+  - 1301.0269
+  - 1286.2304
+  - 1237.6682
+  - 1077.4832
+  - 832.4485
+data_min:
+  optical:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+data_max:
+  optical:
+  - 11763.75
+  - 18784.0
+  - 17984.0
+  - 17184.0
+  - 16751.0
+  - 16500.0
+  - 16377.75
+  - 16288.0
+  - 16123.75
+  - 13780.6943
+  - 15235.0
+  - 15137.0

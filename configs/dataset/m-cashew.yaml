@@ -1,0 +1,98 @@
+_target_: getsits.datasets.mcashewplant.CashewCrops
+dataset_name: CashewCrops
+root_path: ./datasets/m-cashew-plant
+download_url: null
+auto_download: false
+img_size: 256
+multi_temporal: 1
+multi_modal: false
+fold_config: null
+support_test: true
+ignore_index: 0
+num_classes: 7
+classes:
+- "Unknown"
+- "Well-managed planatation"
+- "Poorly-managed planatation"
+- "Non-plantation"
+- "Residential"
+- "Background"
+- "Uncertain"
+distribution:
+- 0.044042
+- 0.133198
+- 0.278138
+- 0.121752
+- 0.031928
+- 0.384105
+- 0.006837
+bands:
+  optical:
+  - B1
+  - B2
+  - B3
+  - B4
+  - B5
+  - B6
+  - B7
+  - B8
+  - B8A
+  - B9
+  - B11
+  - B12
+data_mean:
+  optical:
+  - 516.9318
+  - 631.0321
+  - 889.0483
+  - 875.1507
+  - 1376.5814
+  - 2233.2992
+  - 2548.479
+  - 2642.0247
+  - 2642.0247
+  - 2851.839
+  - 2459.0645
+  - 1596.3358
+data_std:
+  optical:
+  - 203.3885
+  - 227.1115
+  - 222.023
+  - 350.9411
+  - 281.363
+  - 375.1722
+  - 451.2521
+  - 415.8947
+  - 415.8947
+  - 415.7974
+  - 497.4878
+  - 516.2254
+data_min:
+  optical:
+  - 104.0
+  - 1.0
+  - 310.0
+  - 206.0
+  - 445.0
+  - 392.0
+  - 396.0
+  - 419.0
+  - 419.0
+  - 1107.0
+  - 259.0
+  - 167.0
+data_max:
+  optical:
+  - 4145.0
+  - 6764.0
+  - 7520.0
+  - 8960.0
+  - 5406.0
+  - 5456.0
+  - 5567.0
+  - 9337.0
+  - 9337.0
+  - 5761.0
+  - 5819.0
+  - 15200.0

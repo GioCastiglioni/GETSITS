@@ -1,0 +1,36 @@
+_target_: getsits.encoders.vit.VIT_Encoder
+model_name: "ViT-Tiny"
+encoder_weights: ./pretrained_models/vit_t_lesits.pth
+download_url: null
+
+embed_dim: 192
+input_size: 224
+patch_size: 16
+depth: 12
+num_heads: 3
+mlp_ratio: 4
+positional_encoding: "normal"
+
+input_bands: 
+  optical:
+    - B1
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B9
+    - B11
+    - B12
+
+  
+output_layers:
+  - 3
+  - 5
+  - 7
+  - 11
+
+output_dim: 192
