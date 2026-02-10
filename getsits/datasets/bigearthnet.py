@@ -63,18 +63,18 @@ class BigearthNetFull(RawGeoFMDataset):
         year_start = self.reference_date.astype("datetime64[Y]")
         self.ref_doy = (self.reference_date - year_start).astype("timedelta64[D]").astype(int) + 1
 
-        meta_path = Path(self.root_path) / "metadata_geobench.parquet"
+        meta_path = Path(self.root_path) / "metadata_final.parquet"
         if not meta_path.exists():
-            raise FileNotFoundError(f"metadata_geobench.parquet not found: {meta_path}")
+            raise FileNotFoundError(f"metadata_final.parquet not found: {meta_path}")
 
         gdf = pd.read_parquet(meta_path, engine="pyarrow")
 
-        split_col = "split_geobench"
+        split_col = "split"
         #gdf_split = gdf[gdf[split_col] == split].copy()
         if split == "train":
             gdf_split = gdf[gdf[split_col]=="train"].copy()
         elif split == "val":
-            gdf_split = gdf[gdf[split_col]=="val"].copy()
+            gdf_split = gdf[gdf[split_col]=="validation"].copy()
         elif split == "test":
             gdf_split = gdf[gdf[split_col]=="test"].copy()
 
