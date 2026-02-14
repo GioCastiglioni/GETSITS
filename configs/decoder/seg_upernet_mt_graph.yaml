@@ -1,0 +1,13 @@
+_target_: getsits.decoders.upernet_graph.SegMTUPerNetGraph
+
+# overwritten in run
+encoder: null
+num_classes: ${dataset.num_classes}
+multi_temporal: ${dataset.multi_temporal}
+finetune: ${finetune}
+
+# to adapt
+channels: 512
+multi_temporal_strategy: ltae
+
+segmentation: true
