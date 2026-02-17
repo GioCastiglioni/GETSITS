@@ -1,12 +1,10 @@
 _target_: getsits.encoders.olmoearth.OlmoEarth
 encoder_weights: ./pretrained_models/weights.pth
-model_name: "olmo_earth"
-download_url: https://huggingface.co/allenai/OlmoEarth-v1-Base/resolve/main/weights.pth?download=true
+download_url: https://huggingface.co/allenai/OlmoEarth-v1-Tiny/resolve/main/weights.pth
 
 embed_dim: 192
 input_size: 224
 patch_size: 16
-pretrained_patch_size: 8
 depth: 12
 num_heads: 3
 mlp_ratio: 4
