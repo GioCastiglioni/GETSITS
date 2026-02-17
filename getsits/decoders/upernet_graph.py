@@ -32,13 +32,11 @@ def batched_index_select(values, indices):
     return selected.reshape(B, N, k, C)
 
 
-class KNNGraphAttention(nn.Module):
-    """
-    Lightweight Graph Attention Network with KNN adjacency.
-    """
-    def __init__(self, in_channels, out_channels, k=8, reduction_ratio=4):
+class GraphAttention(nn.Module):
+    def __init__(self, in_channels, out_channels, k_semantic=8, reduction_ratio=4):
         super().__init__()
-        self.k = k
+        self.k_semantic = k_semantic
+        self.total_k = 8 + k_semantic 
         self.in_channels = in_channels
         self.out_channels = out_channels
         
@@ -55,64 +53,85 @@ class KNNGraphAttention(nn.Module):
         
         self.out_proj = nn.Conv2d(out_channels, out_channels, 1)
         self.norm = nn.SyncBatchNorm(out_channels)
-        self.act = nn.ReLU(inplace=True)
+        self.act = nn.ReLU()
 
-    def get_knn_indices(self, x_flat, H, W):
+    def get_hybrid_indices(self, x_flat, H, W):
         # x_flat: (B, C_red, N)
-        B = x_flat.shape[0]
+        B, _, N = x_flat.shape
+        device = x_flat.device
 
-        y_grid, x_grid = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
+        # 1. Spatial neighbors via explicit unfolding
+        # (1, 1, H, W)
+        idx_img = torch.arange(N, device=device, dtype=torch.float32).view(1, 1, H, W)
         
-        # Normalized coordinates (0-1 range)
-        coords = torch.stack([y_grid / H, x_grid / W], dim=0).to(x_flat.device)
+        idx_padded = F.pad(idx_img, (1, 1, 1, 1), mode='replicate')
         
-        # (1, 2, N) -> (B, 2, N)
-        coords_flat = coords.reshape(1, 2, -1).expand(B, -1, -1)
+        # (1, 9, N)
+        patches = F.unfold(idx_padded, kernel_size=3)
+        # (1, N, 9)
+        patches = patches.transpose(1, 2).long()
         
-        spatial_lambda = 0.5 
+        # Center pixel is strictly at index 4 in a flattened 3x3 patch.
+        # spatial_idx: (1, N, 8) -> (B, N, 8)
+        spatial_idx = torch.cat([patches[:, :, :4], patches[:, :, 5:]], dim=2)
+        spatial_idx = spatial_idx.expand(B, -1, -1)
+
+        # 2. Semantic neighbors via Cosine Similarity
+        x_norm = F.normalize(x_flat, p=2, dim=1)
+        # sim: (B, N, N)
+        sim = torch.bmm(x_norm.transpose(1, 2), x_norm)
+
+        # 3. Mask spatial neighbors and self to avoid semantic duplication
+        # mask: (B, N, N)
+        mask = torch.zeros((B, N, N), dtype=torch.bool, device=device)
+        mask.scatter_(2, spatial_idx, True)
+        mask.diagonal(dim1=1, dim2=2).fill_(True)
         
-        # (B, C_red + 2, N)
-        x_augmented = torch.cat([x_flat, coords_flat * spatial_lambda], dim=1)
-        
-        # Pairwise distance: (B, N, N)
-        dist = torch.cdist(x_augmented.permute(0, 2, 1), x_augmented.permute(0, 2, 1))
-        
-        # indices: (B, N, k)
-        _, indices = dist.topk(self.k, largest=False, dim=-1)
-        
-        return indices
+        sim.masked_fill_(mask, float('-inf'))
+
+        # 4. Top-K Semantic
+        # semantic_idx: (B, N, k_semantic)
+        _, semantic_idx = sim.topk(self.k_semantic, dim=-1, largest=True)
+
+        # final_idx: (B, N, 8 + k_semantic)
+        final_idx = torch.cat([spatial_idx, semantic_idx], dim=-1)
+
+        return final_idx
 
     def forward(self, x):
-        B, C, H, W = x.shape
+        B, _, H, W = x.shape
         N = H * W
         
-        # 1. Reduce and flatten for KNN
+        # (B, C_red, N)
         x_reduced = self.theta(x).view(B, -1, N) 
-        knn_idx = self.get_knn_indices(x_reduced, H, W) # (B, N, k)
         
-        # 2. Transform original features
-        x_phi = self.phi(x).view(B, -1, N) # (B, C_out, N)
+        # hybrid_idx: (B, N, total_k)
+        hybrid_idx = self.get_hybrid_indices(x_reduced, H, W)
+        
+        # (B, C_out, N)
+        x_phi = self.phi(x).view(B, -1, N) 
         C_out = x_phi.shape[1]
         
-        # Permute to (B, N, C) for batched_index_select
+        # (B, N, C_out)
         x_phi_t = x_phi.permute(0, 2, 1) 
         
-        # 3. Gather neighbor features
-        # neighbor_feats: (B, N, k, C_out)
-        neighbor_feats = batched_index_select(x_phi_t, knn_idx) 
+        # (B, N, total_k, C_out)
+        neighbor_feats = batched_index_select(x_phi_t, hybrid_idx) 
         
-        # 4. Center features: (B, N, 1, C_out)
+        # (B, N, 1, C_out)
         center_feats = x_phi_t.unsqueeze(2)
         
-        # 5. Calculate Attention
-        edge_feats = torch.cat([center_feats.expand(-1, -1, self.k, -1), neighbor_feats], dim=-1)
-        att_weights = self.att_mlp(edge_feats).squeeze(-1) # (B, N, k)
+        # (B, N, total_k, 2 * C_out)
+        edge_feats = torch.cat([center_feats.expand(-1, -1, self.total_k, -1), neighbor_feats], dim=-1)
+        
+        # (B, N, total_k)
+        att_weights = self.att_mlp(edge_feats).squeeze(-1) 
         att_weights = F.softmax(att_weights, dim=-1)
         
-        # 6. Aggregation
-        agg_feats = (neighbor_feats * att_weights.unsqueeze(-1)).sum(dim=2) # (B, N, C_out)
+        # (B, N, C_out)
+        agg_feats = (neighbor_feats * att_weights.unsqueeze(-1)).sum(dim=2) 
         
-        # 7. Final Reshape
+        # (B, C_out, H, W)
         agg_feats = agg_feats.permute(0, 2, 1).view(B, C_out, H, W)
         
         out = self.out_proj(agg_feats)
@@ -122,7 +141,7 @@ class KNNGraphAttention(nn.Module):
         return out
 
 
-class SegUPerNet(Decoder):
+class SegUPerNetGraph(Decoder):
     """Unified Perceptual Parsing for Scene Understanding with optional lateral GNN."""
 
     def __init__(
@@ -210,10 +229,10 @@ class SegUPerNet(Decoder):
             is_deepest_lateral = (i == num_laterals - 1)
             
             if use_gnn_lateral and is_deepest_lateral:
-                l_conv = KNNGraphAttention(
+                l_conv = GraphAttention(
                     in_channels=in_channels,
                     out_channels=self.channels,
-                    k=9 # 8 neighbors + self
+                    k_semantic=8 # 8 neighbors + self
                 )
             else:
                 l_conv = nn.Sequential(
@@ -367,7 +386,7 @@ class SegUPerNet(Decoder):
         return output
 
 
-class SegMTUPerNetGraph(SegUPerNet):
+class SegMTUPerNetGraph(SegUPerNetGraph):
     def __init__(
         self,
         encoder: Encoder,
