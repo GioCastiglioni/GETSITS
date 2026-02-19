@@ -1,7 +1,7 @@
 _target_: getsits.encoders.galileo.GalileoTiny
 model_name: "Galileo-Tiny"
-encoder_weights: ./pretrained_models/galileo_tiny.pt
-download_url: null 
+encoder_weights: ./pretrained_models/encoder.pt
+download_url: https://huggingface.co/nasaharvest/galileo/resolve/main/models/tiny/encoder.pt
 
 embed_dim: 192
 input_size: 224
