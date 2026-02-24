@@ -1,0 +1,22 @@
+trainer:
+  _target_: getsits.engine.pretrainer.Trainer
+  # params overwritten in run
+  model: null
+  train_loader: null
+  optimizer: null
+  lr_scheduler: null
+  exp_dir: null
+  device: null
+  criterion: null
+
+  # params to adapt
+  n_epochs: 80
+  precision: bfp16
+  ckpt_interval: 1000
+  eval_interval: 1
+  log_interval: 10
+  use_wandb: ${use_wandb}
+  n_global: 2
+  n_local: 8
+
+

@@ -1,0 +1,91 @@
+_target_: getsits.datasets.croptypemapping.CropTypeMapping
+dataset_name: CropTypeMapping-Ghana
+root_path: ./datasets/croptypemapping
+download_url: https://drive.google.com/drive/folders/1WhVObtFOzYFiXBsbbrEGy1DUtv7ov7wF?usp=sharing
+auto_download: True
+country: "ghana"
+fold_config: 1
+support_test: True
+
+img_size: 64
+multi_temporal: 45
+multi_modal: False
+
+use_pad: True
+
+# classes
+ignore_index: -1
+num_classes: 4
+classes:
+  - Maize
+  - Groundnut
+  - Rice
+  - Soya Bean
+
+distribution:
+  - 0.1672
+  - 0.5530
+  - 0.1627
+  - 0.1171
+
+bands:
+  optical:
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B11
+    - B12
+
+data_mean:
+  optical:
+    - 2701.71593884
+    - 2600.59218016
+    - 2702.98981327
+    - 2832.76005685
+    - 3362.33749485
+    - 3694.38927846
+    - 3477.03932968
+    - 3924.18081951
+    - 2793.38724475
+    - 2010.93043819
+data_std:
+  optical:
+    - 2345.28425512
+    - 2255.20104400
+    - 2363.18894915
+    - 2275.80037884
+    - 2205.07460960
+    - 2235.46081668
+    - 2126.82657965
+    - 2201.54064046
+    - 1253.29920147
+    - 976.84437031
+data_max:
+  optical:
+    - 14339
+    - 15090
+    - 16007
+    - 14287
+    - 14269
+    - 14655
+    - 14688
+    - 14896
+    - 16628
+    - 17005
+data_min:
+  optical:
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
