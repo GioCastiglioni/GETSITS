@@ -1,7 +1,7 @@
 
 _target_: getsits.datasets.bigearthnet.BigearthNetFull
 dataset_name: BigearthNet
-root_path: /home/gcastiglioni/workspace/bigearthnet
+root_path: ./datasets/bigearthnet
 download_url: null
 auto_download: false
 img_size: 120
