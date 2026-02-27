@@ -4,6 +4,12 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.distributed.nn import all_reduce as functional_all_reduce
 from torch.distributed.nn import ReduceOp
+import math
+import copy
+from multiprocessing import Value
+from getsits.encoders.vit import Block
+from torch.nn.init import trunc_normal_
+from getsits.encoders.pos_embed import get_2d_sincos_pos_embed_with_scale
 
 class LeJEPA(nn.Module):
     def __init__(
@@ -212,3 +218,346 @@ class EppsPulley(UnivariateTest):
         return (err @ self.weights) * N * self.world_size
     
 
+#-------------------------------------------------------------------------------------------------------------------------
+
+def apply_masks(x, masks):
+    all_x = []
+    for m in masks:
+        # Expand mask indices to match the feature dimension (D)
+        mask_keep = m.unsqueeze(-1).repeat(1, 1, x.size(-1))
+        
+        # Gather selected tokens along the sequence dimension (dim=1)
+        all_x += [torch.gather(x, dim=1, index=mask_keep)]
+        
+    return torch.cat(all_x, dim=0)
+
+def repeat_interleave_batch(x, batch_size, repeat):
+    N = len(x) // repeat
+    x = torch.cat([
+        torch.cat([x[i*batch_size : (i+1)*batch_size] for _ in range(repeat)], dim=0)
+        for i in range(N)
+    ], dim=0)
+    return x
+
+class MaskCollator(object):
+    def __init__(
+        self,
+        input_size=(6, 6),
+        patch_size=1,
+        enc_mask_scale=(0.2, 0.8),
+        pred_mask_scale=(0.85, 1.0),
+        aspect_ratio=(0.75, 1.5),
+        nenc=1,
+        npred=4,
+        min_keep=6,
+        allow_overlap=False
+    ):
+        super(MaskCollator, self).__init__()
+        if not isinstance(input_size, tuple):
+            input_size = (input_size, ) * 2
+        self.patch_size = patch_size
+        self.height = input_size[0] // patch_size
+        self.width = input_size[1] // patch_size
+        self.enc_mask_scale = enc_mask_scale
+        self.pred_mask_scale = pred_mask_scale
+        self.aspect_ratio = aspect_ratio
+        self.nenc = nenc
+        self.npred = npred
+        self.min_keep = min_keep  
+        self.allow_overlap = allow_overlap  
+        self._itr_counter = Value('i', -1)  
+
+    def step(self):
+        i = self._itr_counter
+        with i.get_lock():
+            i.value += 1
+            v = i.value
+        return v
+
+    def _sample_block_size(self, generator, scale, aspect_ratio_scale):
+        _rand = torch.rand(1, generator=generator).item()
+        
+        min_s, max_s = scale
+        mask_scale = min_s + _rand * (max_s - min_s)
+        max_keep = int(self.height * self.width * mask_scale)
+        
+        min_ar, max_ar = aspect_ratio_scale
+        aspect_ratio = min_ar + _rand * (max_ar - min_ar)
+        
+        h = int(round(math.sqrt(max_keep * aspect_ratio)))
+        w = int(round(math.sqrt(max_keep / aspect_ratio)))
+        while h >= self.height:
+            h -= 1
+        while w >= self.width:
+            w -= 1
+
+        return (h, w)
+
+    def _sample_block_mask(self, b_size, acceptable_regions=None):
+        h, w = b_size
+
+        def constrain_mask(mask, tries=0):
+            N = max(int(len(acceptable_regions)-tries), 0)
+            for k in range(N):
+                mask *= acceptable_regions[k]
+        
+        tries = 0
+        timeout = og_timeout = 20
+        valid_mask = False
+        while not valid_mask:
+            top = torch.randint(0, self.height - h + 1, (1,))
+            left = torch.randint(0, self.width - w + 1, (1,))
+            mask = torch.zeros((self.height, self.width), dtype=torch.int32)
+            mask[top:top+h, left:left+w] = 1
+            
+            if acceptable_regions is not None:
+                constrain_mask(mask, tries)
+            mask = torch.nonzero(mask.flatten())
+            
+            valid_mask = len(mask) > self.min_keep
+            if not valid_mask:
+                timeout -= 1
+                if timeout == 0:
+                    tries += 1
+                    timeout = og_timeout
+                    if tries > 20:
+                        raise ValueError('Could not find a valid mask')
+        mask = mask.squeeze()
+        if mask.dim() == 0:
+            mask = mask.unsqueeze(0)
+        
+        mask_complement = torch.ones((self.height, self.width), dtype=torch.int32)
+        mask_complement[top:top+h, left:left+w] = 0
+        
+        return mask, mask_complement
+
+    def __call__(self, x):
+        B = len(x)
+
+        seed = self.step()
+        g = torch.Generator()
+        g.manual_seed(seed)
+        p_size = self._sample_block_size(
+            generator=g,
+            scale=self.pred_mask_scale,
+            aspect_ratio_scale=self.aspect_ratio)
+        e_size = self._sample_block_size(
+            generator=g,
+            scale=self.enc_mask_scale,
+            aspect_ratio_scale=(1., 1.))
+        collated_masks_pred, collated_masks_enc = [], []
+        min_keep_pred = self.height * self.width
+        min_keep_enc = self.height * self.width
+        
+        for _ in range(B):
+            masks_p, masks_C = [], []
+            for _ in range(self.npred):
+                mask, mask_C = self._sample_block_mask(p_size)
+                masks_p.append(mask)
+                masks_C.append(mask_C)
+                min_keep_pred = min(min_keep_pred, len(mask))
+            collated_masks_pred.append(masks_p)
+
+            acceptable_regions = masks_C
+            if self.allow_overlap:
+                acceptable_regions = None
+
+            masks_e = []
+            for _ in range(self.nenc):
+                mask, _ = self._sample_block_mask(e_size, acceptable_regions=acceptable_regions)
+                masks_e.append(mask)
+                min_keep_enc = min(min_keep_enc, len(mask))
+            collated_masks_enc.append(masks_e)
+            
+        collated_masks_pred = [[cm[:min_keep_pred] for cm in cm_list] for cm_list in collated_masks_pred]
+        collated_masks_pred = torch.utils.data.default_collate(collated_masks_pred)
+        
+        collated_masks_enc = [[cm[:min_keep_enc] for cm in cm_list] for cm_list in collated_masks_enc]
+        collated_masks_enc = torch.utils.data.default_collate(collated_masks_enc)
+        
+        device = x.device
+        for i, tensor in enumerate(collated_masks_pred):
+            collated_masks_pred[i] = tensor.to(device)
+
+        for i, tensor in enumerate(collated_masks_enc):
+            collated_masks_enc[i] = tensor.to(device)
+            
+        return collated_masks_enc, collated_masks_pred
+
+class VisionTransformerPredictor(nn.Module):
+    def __init__(
+        self,
+        num_patches,
+        embed_dim=192,
+        predictor_embed_dim=96,
+        depth=6,
+        num_heads=4,
+        mlp_ratio=4.0,
+        qkv_bias=True,
+        attn_drop_rate=0.0,
+        drop_path_rate=0.0,
+        norm_layer=nn.LayerNorm,
+        init_std=0.02,
+        scale: int = 1,
+        **kwargs
+    ):
+        super().__init__()
+        self.predictor_embed = nn.Linear(embed_dim, predictor_embed_dim, bias=True)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, predictor_embed_dim))
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, predictor_embed_dim))
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)] 
+        
+        self.predictor_pos_embed = get_2d_sincos_pos_embed_with_scale(
+                                        predictor_embed_dim,
+                                        int(num_patches**0.5),
+                                        scale,
+                                        cls_token=False,
+                                    )
+        
+        self.predictor_blocks = nn.ModuleList([
+            Block(dim=predictor_embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
+                 attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer)
+            for i in range(depth)])
+            
+        self.predictor_norm = norm_layer(predictor_embed_dim)
+        self.predictor_proj = nn.Linear(predictor_embed_dim, embed_dim, bias=True)
+        
+        self.init_std = init_std
+        trunc_normal_(self.mask_token, std=self.init_std)
+        self.apply(self._init_weights)
+        self.fix_init_weight()
+
+    def fix_init_weight(self):
+        def rescale(param, layer_id):
+            param.div_(math.sqrt(2.0 * layer_id))
+
+        for layer_id, layer in enumerate(self.predictor_blocks):
+            rescale(layer.attn.proj.weight.data, layer_id + 1)
+            rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=self.init_std)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        elif isinstance(m, nn.Conv2d):
+            trunc_normal_(m.weight, std=self.init_std)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x, masks_x, masks):
+        if not isinstance(masks_x, list):
+            masks_x = [masks_x]
+
+        if not isinstance(masks, list):
+            masks = [masks]
+
+        B = len(x) // len(masks_x)
+
+        x = self.predictor_embed(x)
+
+        x_pos_embed = self.predictor_pos_embed.repeat(B, 1, 1).to(x.device)
+        x += apply_masks(x_pos_embed, masks_x)
+
+        _, N_ctxt, D = x.shape
+
+        pos_embs = self.predictor_pos_embed.repeat(B, 1, 1).to(x.device)
+        pos_embs = apply_masks(pos_embs, masks)
+        pos_embs = repeat_interleave_batch(pos_embs, B, repeat=len(masks_x))
+        
+        pred_tokens = self.mask_token.repeat(pos_embs.size(0), pos_embs.size(1), 1)
+        
+        pred_tokens += pos_embs
+        x = x.repeat(len(masks), 1, 1)
+        x = torch.cat([self.cls_token.expand(x.shape[0], -1, -1), x, pred_tokens], dim=1)
+        
+        for blk in self.predictor_blocks:
+            x = blk(x)
+        x = self.predictor_norm(x)
+
+        x = x[:, (N_ctxt + 1):]
+        x = self.predictor_proj(x)
+
+        return x
+
+class AnySatJEPALoss(nn.Module):
+    def __init__(
+        self,
+        student_encoder,
+        latent_shape=(14, 14),
+        embed_dim=192,
+        predictor_embed_dim=96,
+        predictor_depth=6,
+        predictor_num_heads=4,
+        scale=1,
+        enc_mask_scale=(0.85, 1.0),
+        pred_mask_scale=(0.2, 0.8),
+        aspect_ratio=(0.75, 1.5),
+        nenc=1,
+        npred=4,
+        min_keep=0,
+        allow_overlap=False
+    ):
+        super().__init__()
+        
+        self.teacher = copy.deepcopy(student_encoder)
+        for p in self.teacher.parameters():
+            p.requires_grad = False
+
+        num_patches = latent_shape[0] * latent_shape[1]
+        
+        self.predictor = VisionTransformerPredictor(
+            num_patches=num_patches,
+            embed_dim=embed_dim,
+            predictor_embed_dim=predictor_embed_dim,
+            depth=predictor_depth,
+            num_heads=predictor_num_heads,
+            scale=scale
+        )
+        
+        self.mask_collator = MaskCollator(
+            input_size=latent_shape,
+            patch_size=1,
+            enc_mask_scale=enc_mask_scale,
+            pred_mask_scale=pred_mask_scale,
+            aspect_ratio=aspect_ratio,
+            nenc=nenc,
+            npred=npred,
+            min_keep=min_keep,
+            allow_overlap=allow_overlap
+        )
+
+    def forward(self, inputs, student_encoder, batch_positions=None):
+        mask_enc, mask_pred = self.mask_collator(inputs)
+
+        with torch.no_grad():
+            h_teacher, _, _, _ = self.teacher(inputs, batch_positions=batch_positions)
+            
+            if h_teacher.ndim == 4:
+                h_teacher = h_teacher.flatten(2).transpose(1, 2)
+            
+            h_teacher = F.layer_norm(h_teacher, (h_teacher.size(-1),))
+            h_targets = apply_masks(h_teacher, mask_pred)
+            h_targets = repeat_interleave_batch(h_targets, len(h_teacher), len(mask_enc))
+
+        h_student, _, _, _ = student_encoder(inputs, batch_positions=batch_positions) 
+        if h_student.ndim == 4:
+            h_student = h_student.flatten(2).transpose(1, 2)
+            
+        h_context = apply_masks(h_student, mask_enc)
+
+        student_preds = self.predictor(h_context, mask_enc, mask_pred)
+
+        loss = F.smooth_l1_loss(student_preds, h_targets)
+        return loss
+
+    @torch.no_grad()
+    def update_teacher_ema(self, student_encoder, momentum=0.996):
+        for param_student, param_teacher in zip(student_encoder.parameters(), self.teacher.parameters()):
+            param_teacher.data.mul_(momentum).add_((1.0 - momentum) * param_student.detach().data)
+
+    def __str__(self):
+        return "AnySatJEPA"

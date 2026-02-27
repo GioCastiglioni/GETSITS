@@ -75,7 +75,6 @@ class Trainer:
         self.ckpt_interval = ckpt_interval
         self.eval_interval = eval_interval
         self.log_interval = log_interval
-        self.n_classes = self.model.module.num_classes
 
         self.training_stats = {
             name: RunningAverageMeter(length=self.batch_per_epoch)
@@ -102,7 +101,7 @@ class Trainer:
 
             self.wandb = wandb
         
-        self.transform = ConsistentTransform(h_w=self.model.module.encoder.input_size, degrees=45).to(self.device)
+        self.transform = ConsistentTransform(h_w=self.model.module.input_size, degrees=45).to(self.device)
 
         self.n_global = n_global
         self.n_local = n_local
@@ -161,42 +160,50 @@ class Trainer:
         for batch_idx, data in enumerate(self.train_loader):
 
             data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
-            views = []
-            for _ in range(self.n_global):
-                views.append(self.temporal_transform(data["image"]["optical"].to(self.device)))
-
-            B, C, T, H, W = views[0].shape
             
-            
-            self.training_stats["data_time"].update(time.time() - end_time)
+            if str(self.criterion) == "LeJEPA":
+                anysat_flag = False
+                views = []
+                for _ in range(self.n_global):
+                    views.append(self.temporal_transform(data["image"]["optical"].to(self.device)))
 
-            with torch.autocast(
-                "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
-            ):
-                global_views = []
-                local_views = []
-                with torch.no_grad():
-                    # Synchronize global_step_views across all ranks
-                    global_step_sync = all_reduce(self.criterion.global_step_views.clone(), op="MAX")
-                    seed = global_step_sync.item()
-
-                    # Get reusable generator
-                    g = self._get_generator(self.device, seed)
-
-                    local_indexes = torch.randint(0, T, (self.n_local//self.n_global,), generator=g, device=self.device).long()
-                    self.criterion.global_step_views.add_(1)
-
-                for view in views:
-                    out, feature_maps, _, _ = self.model.module.encoder(view, batch_positions=data["metadata"])
-                    out = self.model.module.encoder.projector(out)
-                    global_views.append(out)
-                    for local_index in range(self.n_local//self.n_global):
-                        local_views.append(self.model.module.encoder.projector(feature_maps[-1][:,local_indexes[local_index],:,:,:]))
+                B, C, T, H, W = views[0].shape
                 
-                loss, inv, sigreg = self.compute_loss(global_views, local_views)
+                self.training_stats["data_time"].update(time.time() - end_time)
 
-                if loss == 0.0:
-                    loss = loss + 0.0 * sum(p.sum() for p in self.model.module.parameters())
+                with torch.autocast(
+                    "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
+                ):
+                    global_views = []
+                    local_views = []
+                    with torch.no_grad():
+                        # Synchronize global_step_views across all ranks
+                        global_step_sync = all_reduce(self.criterion.global_step_views.clone(), op="MAX")
+                        seed = global_step_sync.item()
+
+                        # Get reusable generator
+                        g = self._get_generator(self.device, seed)
+
+                        local_indexes = torch.randint(0, T, (self.n_local//self.n_global,), generator=g, device=self.device).long()
+                        self.criterion.global_step_views.add_(1)
+
+                    for view in views:
+                        out, feature_maps, _, _ = self.model(view, batch_positions=data["metadata"])
+                        out = self.model(out, projection=True)
+                        global_views.append(out)
+                        for local_index in range(self.n_local//self.n_global):
+                            local_views.append(self.model(feature_maps[-1][:,local_indexes[local_index],:,:,:], projection=True))
+                    
+                    loss, inv, sigreg = self.compute_loss(global_views, local_views)
+
+                    if loss == 0.0:
+                        loss = loss + 0.0 * sum(p.sum() for p in self.model.module.parameters())
+
+            else:
+                anysat_flag = True
+                img = self.temporal_transform(data["image"]["optical"].to(self.device))
+                with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
+                    loss = self.criterion(img, self.model, batch_positions=data["metadata"])
                 
             self.optimizer.zero_grad()
 
@@ -228,9 +235,19 @@ class Trainer:
                             f"train_{k}": v.avg
                             for k, v in self.training_metrics.items()
                         },
+                    } if str(self.criterion) == "LeJEPA" else {
+                        "train_loss": loss.item(),
+                        "learning_rate": self.optimizer.param_groups[0]["lr"],
+                        "epoch": epoch,
+                        **{
+                            f"train_{k}": v.avg
+                            for k, v in self.training_metrics.items()
+                        }, 
                     },
                     step=epoch * len(self.train_loader) + batch_idx,
                 )
+
+            if anysat_flag: self.criterion.module.update_teacher_ema(self.model, momentum=0.996)
 
             self.training_stats["batch_time"].update(time.time() - end_time)
             end_time = time.time()
@@ -246,58 +263,88 @@ class Trainer:
         """
         self.model.eval()
 
-        total_epoch_loss = 0.0
-        total_inv = 0.0
-        total_sigreg = 0.0
-        
-        end_time = time.time()
-        for batch_idx, data in enumerate(tqdm(self.val_loader)):
+        if str(self.criterion) == "LeJEPA":
 
-            data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
-            image = data["image"]["optical"].to(self.device)
-            B, C, T, H, W = image.shape
-
-            self.training_stats["data_time"].update(time.time() - end_time)
-
-            with torch.autocast(
-                "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
-            ):
-
-                local_indexes = torch.linspace(0, T-1, self.n_local//self.n_global).long()
-                out, feature_maps, _, _ = self.model.module.encoder(image, batch_positions=data["metadata"])
-                global_views = [self.model.module.encoder.projector(out)]
-                local_views = [self.model.module.encoder.projector(feature_maps[-1][:,local_index,:,:,:]) for local_index in local_indexes]
-
-                batch_loss, inv, sigreg = self.compute_loss(global_views, local_views)
-
-            total_epoch_loss += batch_loss.item()
-            total_inv += inv
-            total_sigreg += sigreg
-            torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
-
-        final_val_loss = total_epoch_loss / len(self.val_loader)
-        final_inv = total_inv / len(self.val_loader)
-        final_sigreg = total_sigreg / len(self.val_loader)
-
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            metrics_tensor = torch.tensor([final_val_loss, final_inv, final_sigreg], device=self.device)
-            torch.distributed.all_reduce(metrics_tensor, op=torch.distributed.ReduceOp.AVG)
-            final_val_loss = metrics_tensor[0].item()
-            final_inv = metrics_tensor[1].item()
-            final_sigreg = metrics_tensor[2].item()
-
-        if self.use_wandb and self.rank == 0:
-            self.wandb.log(
-                {
-                    "val_loss": final_val_loss,
-                    "val_inv": final_inv,
-                    "val_sigreg": final_sigreg,
-                    "epoch": epoch
-                },
-                step = epoch * len(self.train_loader)
-            )
+            total_epoch_loss = 0.0
+            total_inv = 0.0
+            total_sigreg = 0.0
             
-        return final_val_loss
+            end_time = time.time()
+            for batch_idx, data in enumerate(tqdm(self.val_loader)):
+
+                data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
+                image = data["image"]["optical"].to(self.device)
+                B, C, T, H, W = image.shape
+
+                self.training_stats["data_time"].update(time.time() - end_time)
+
+                with torch.autocast(
+                    "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
+                ):
+
+                    local_indexes = torch.linspace(0, T-1, self.n_local//self.n_global).long()
+                    out, feature_maps, _, _ = self.model(image, batch_positions=data["metadata"])
+                    global_views = [self.model(out, projection=True)]
+                    local_views = [self.model(feature_maps[-1][:,local_index,:,:,:], projection=True) for local_index in local_indexes]
+
+                    batch_loss, inv, sigreg = self.compute_loss(global_views, local_views)
+
+                total_epoch_loss += batch_loss.item()
+                total_inv += inv
+                total_sigreg += sigreg
+                torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
+
+            final_val_loss = total_epoch_loss / len(self.val_loader)
+            final_inv = total_inv / len(self.val_loader)
+            final_sigreg = total_sigreg / len(self.val_loader)
+
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                metrics_tensor = torch.tensor([final_val_loss, final_inv, final_sigreg], device=self.device)
+                torch.distributed.all_reduce(metrics_tensor, op=torch.distributed.ReduceOp.AVG)
+                final_val_loss = metrics_tensor[0].item()
+                final_inv = metrics_tensor[1].item()
+                final_sigreg = metrics_tensor[2].item()
+
+            if self.use_wandb and self.rank == 0:
+                self.wandb.log(
+                    {
+                        "val_loss": final_val_loss,
+                        "val_inv": final_inv,
+                        "val_sigreg": final_sigreg,
+                        "epoch": epoch
+                    },
+                    step = epoch * len(self.train_loader)
+                )
+                
+            return final_val_loss
+        else:
+            total_epoch_loss = 0
+            for batch_idx, data in enumerate(self.train_loader):
+                data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
+                img = self.temporal_transform(data["image"]["optical"].to(self.device))
+                with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
+                    total_epoch_loss += self.criterion(img, self.model, batch_positions=data["metadata"]).item()
+
+                torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
+
+            final_val_loss = total_epoch_loss / len(self.val_loader)
+
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                metrics_tensor = torch.tensor([final_val_loss], device=self.device)
+                torch.distributed.all_reduce(metrics_tensor, op=torch.distributed.ReduceOp.AVG)
+                final_val_loss = metrics_tensor.item()
+
+            if self.use_wandb and self.rank == 0:
+                self.wandb.log(
+                    {
+                        "val_loss": final_val_loss,
+                        "epoch": epoch
+                    },
+                    step = epoch * len(self.train_loader)
+                )
+                
+            return final_val_loss
+            
 
     @torch.no_grad()
     def temporal_transform(self, x: torch.Tensor):

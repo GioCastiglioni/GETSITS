@@ -138,7 +138,8 @@ class VIT_Encoder(Encoder):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x, batch_positions):
+    def forward(self, x, batch_positions=None, projection = False):
+        if projection: return self.projector(x)
         x = x.permute(0, 2, 1, 3, 4)  # (B, T, C, H, W)
         B, T, C, H, W = x.shape
 

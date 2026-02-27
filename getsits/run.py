@@ -310,10 +310,7 @@ def main(cfg: DictConfig) -> None:
             drop_last=True,
             collate_fn=collate_fn,
         )
-
-        criterion = instantiate(cfg.criterion)
-        criterion = criterion.to(device)
-            
+        
         decoder = torch.nn.parallel.DistributedDataParallel(
                 decoder,
                 device_ids=[local_rank],
@@ -321,14 +318,39 @@ def main(cfg: DictConfig) -> None:
                 find_unused_parameters=True,
             )
 
-        params=[]
-        if str(decoder.module.encoder) != "OlmoEarth" and str(decoder.module.encoder) != "GalileoTiny" and str(decoder.module.encoder) != "AnySat":
-            params.append({'params': decoder.module.encoder.tmap.parameters(), 'lr': cfg.optimizer.lr})
+        if "AnySatJEPALoss" in cfg.criterion._target_:
+            criterion = instantiate(
+                cfg.criterion,
+                encoder
+                ).to(device)
+            criterion = torch.nn.parallel.DistributedDataParallel(
+                criterion,
+                device_ids=[local_rank],
+                output_device=local_rank,
+                find_unused_parameters=True,
+            )
+        else: 
+            criterion = instantiate(cfg.criterion)
+            criterion = criterion.to(device)
 
-        if not cfg.pretrain: 
+        params=[]
+
+        if not cfg.pretrain:
+            if str(decoder.module.encoder) != "OlmoEarth" and str(decoder.module.encoder) != "GalileoTiny":
+                params.append({'params': decoder.module.encoder.tmap.parameters(), 'lr': cfg.optimizer.lr})
+
             params.append({'params': params_extractor(decoder.module, encoder=False, projector=(not cfg.decoder.segmentation)), 'lr': cfg.optimizer.lr})
-        if cfg.finetune:
-            params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
+            if cfg.finetune:
+                params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
+        else:
+            encoder_model = torch.nn.parallel.DistributedDataParallel(
+                        encoder.to(device),
+                        device_ids=[local_rank],
+                        output_device=local_rank,
+                        find_unused_parameters=True,
+                    )
+
+            params.append({'params': encoder_model.module.parameters(), 'lr': cfg.optimizer.lr})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
@@ -361,7 +383,7 @@ def main(cfg: DictConfig) -> None:
         else:
             trainer: Trainer = instantiate(
                         cfg.task.trainer,
-                        model=decoder,
+                        model=encoder_model,
                         train_loader=train_loader,
                         val_loader=val_loader,
                         lr_scheduler=lr_scheduler,

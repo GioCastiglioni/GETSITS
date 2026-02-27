@@ -1,0 +1,2 @@
+_target_: getsits.utils.losses.AnySatJEPALoss
+embed_dim: ${encoder.output_dim}

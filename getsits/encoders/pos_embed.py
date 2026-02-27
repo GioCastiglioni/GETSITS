@@ -1,6 +1,36 @@
 import numpy as np
 import torch
 
+def get_2d_sincos_pos_embed_with_scale(
+    embed_dim, grid_size, scale, cls_token=False, modis=False
+):
+    grid_h = torch.arange(grid_size, dtype=torch.float32)
+    grid_w = torch.arange(grid_size, dtype=torch.float32)
+    grid = torch.meshgrid(grid_w, grid_h, indexing="xy")
+    grid = torch.stack(grid, dim=0)
+
+    grid = torch.einsum("chw,n->cnhw", grid, torch.tensor([scale], dtype=torch.float32)) 
+    _, n, h, w = grid.shape
+    pos_embed = get_2d_sincos_pos_embed_from_grid_torch(embed_dim, grid)
+    pos_embed = pos_embed.reshape(n, h * w, embed_dim)
+    
+    if cls_token:
+        pos_embed = torch.cat(
+            [
+                torch.zeros([n, 1, embed_dim], dtype=torch.float32, device=pos_embed.device),
+                pos_embed,
+            ],
+            dim=1,
+        )
+    if modis:
+        pos_embed = torch.cat(
+            [
+                torch.zeros([n, 1, embed_dim], dtype=torch.float32, device=pos_embed.device),
+                pos_embed,
+            ],
+            dim=1,
+        )
+    return pos_embed
 
 def get_2d_sincos_pos_embed_with_resolution(
     embed_dim, grid_size, res, cls_token=False, device="cpu"

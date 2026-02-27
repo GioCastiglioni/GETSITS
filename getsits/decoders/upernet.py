@@ -37,7 +37,7 @@ class SegUPerNet(Decoder):
 
         self.model_name = "UPerNet"
         self.encoder = encoder
-        self.no_tmap = (str(encoder) == "OlmoEarth") or (str(encoder) == "GalileoTiny") or (str(encoder) == "AnySat")
+        self.no_tmap = (str(encoder) == "OlmoEarth") or (str(encoder) == "GalileoTiny")
         self.finetune = finetune
         self.feature_multiplier = feature_multiplier
 
