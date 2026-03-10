@@ -319,7 +319,7 @@ class Trainer:
             return final_val_loss
         else:
             total_epoch_loss = 0
-            for batch_idx, data in enumerate(self.train_loader):
+            for batch_idx, data in enumerate(self.val_loader):
                 data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
                 img = self.temporal_transform(data["image"]["optical"].to(self.device))
                 with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
@@ -340,7 +340,7 @@ class Trainer:
                         "val_loss": final_val_loss,
                         "epoch": epoch
                     },
-                    step = epoch * len(self.train_loader)
+                    step = epoch * len(self.val_loader)
                 )
                 
             return final_val_loss
@@ -381,6 +381,13 @@ class Trainer:
         """
         checkpoint = {
             "model": self.model.module.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "lr_scheduler": self.lr_scheduler.state_dict(),
+            "scaler": self.scaler.state_dict(),
+            "epoch": epoch,
+        } if str(self.criterion) != "AnySatJEPA" else {
+            "model": self.model.module.state_dict(),
+            "criterion": self.criterion.module.teacher.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "lr_scheduler": self.lr_scheduler.state_dict(),
             "scaler": self.scaler.state_dict(),
