@@ -388,6 +388,7 @@ class Trainer:
         } if str(self.criterion) != "AnySatJEPA" else {
             "model": self.model.module.state_dict(),
             "criterion": self.criterion.module.teacher.state_dict(),
+            "predictor": self.criterion.module.predictor.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "lr_scheduler": self.lr_scheduler.state_dict(),
             "scaler": self.scaler.state_dict(),
