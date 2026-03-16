@@ -351,6 +351,8 @@ def main(cfg: DictConfig) -> None:
                     )
 
             params.append({'params': encoder_model.module.parameters(), 'lr': cfg.optimizer.lr})
+            if "AnySatJEPALoss" in cfg.criterion._target_:
+                params.append({'params': criterion.module.predictor.parameters(), 'lr': cfg.optimizer.lr})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
