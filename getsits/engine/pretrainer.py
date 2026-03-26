@@ -129,6 +129,7 @@ class Trainer:
                 self.logger.info(f"Evaluating epoch {epoch}...")
                 val_loss = self.evaluate(epoch)
                 self.save_best_checkpoint(val_loss, epoch)
+                self.logger.info(f"Val loss: {val_loss}")
                 self.logger.info(f"Evaluation complete.")
                 torch.cuda.empty_cache()
 
@@ -340,7 +341,6 @@ class Trainer:
                         "val_loss": final_val_loss,
                         "epoch": epoch
                     },
-                    step = epoch * len(self.val_loader)
                 )
                 
             return final_val_loss
