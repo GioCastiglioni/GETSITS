@@ -102,6 +102,7 @@ class Trainer:
             self.wandb = wandb
         
         self.transform = ConsistentTransform(h_w=self.model.module.input_size, degrees=45).to(self.device)
+        self.transform_local = ConsistentTransform(h_w=self.model.module.input_size, degrees=45, max_scale=0.35).to(self.device)
 
         self.n_global = n_global
         self.n_local = n_local
@@ -165,8 +166,12 @@ class Trainer:
             if str(self.criterion) == "LeJEPA":
                 anysat_flag = False
                 views = []
-                for _ in range(self.n_global):
-                    views.append(self.temporal_transform(data["image"]["optical"].to(self.device)))
+                views_local = []
+                with torch.no_grad():
+                    for _ in range(self.n_global):
+                        views.append(self.temporal_transform(data["image"]["optical"].to(self.device)))
+                    for _ in range(self.n_local):
+                        views_local.append(self.temporal_transform(data["image"]["optical"].to(self.device), global_transform=False))
 
                 B, C, T, H, W = views[0].shape
                 
@@ -185,15 +190,17 @@ class Trainer:
                         # Get reusable generator
                         g = self._get_generator(self.device, seed)
 
-                        local_indexes = torch.randint(0, T, (self.n_local//self.n_global,), generator=g, device=self.device).long()
                         self.criterion.global_step_views.add_(1)
 
                     for view in views:
-                        out, feature_maps, _, _ = self.model(view, batch_positions=data["metadata"])
+                        out, _, _, _ = self.model(view, batch_positions=data["metadata"])
                         out = self.model(out, projection=True)
                         global_views.append(out)
-                        for local_index in range(self.n_local//self.n_global):
-                            local_views.append(self.model(feature_maps[-1][:,local_indexes[local_index],:,:,:], projection=True))
+
+                    for local_view in views_local:
+                        out, _, _, _ = self.model(local_view, batch_positions=data["metadata"])
+                        out = self.model(out, projection=True)
+                        local_views.append(out)
                     
                     loss, inv, sigreg = self.compute_loss(global_views, local_views)
 
@@ -282,11 +289,15 @@ class Trainer:
                 with torch.autocast(
                     "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
                 ):
-
-                    local_indexes = torch.linspace(0, T-1, self.n_local//self.n_global).long()
-                    out, feature_maps, _, _ = self.model(image, batch_positions=data["metadata"])
+                    
+                    out, _, _, _ = self.model(image, batch_positions=data["metadata"])
                     global_views = [self.model(out, projection=True)]
-                    local_views = [self.model(feature_maps[-1][:,local_index,:,:,:], projection=True) for local_index in local_indexes]
+
+                    out, _, _, _ = self.model(
+                        self.temporal_transform(image, global_transform=False),
+                        batch_positions=data["metadata"]
+                        )
+                    local_views = [self.model(out, projection=True)]
 
                     batch_loss, inv, sigreg = self.compute_loss(global_views, local_views)
 
@@ -347,7 +358,7 @@ class Trainer:
             
 
     @torch.no_grad()
-    def temporal_transform(self, x: torch.Tensor):
+    def temporal_transform(self, x: torch.Tensor, global_transform = True):
         """
         x:     [B, C, T, H, W]
         """
@@ -362,7 +373,7 @@ class Trainer:
         for b in range(B):
             x_b = x[b*Temp:(b+1)*Temp]  # [T, C, H, W]
 
-            sample = self.transform({"image": x_b})
+            sample = self.transform({"image": x_b}) if global_transform else self.transform_local({"image": x_b})
 
             x_b = sample["image"].permute(1, 0, 2, 3)
 

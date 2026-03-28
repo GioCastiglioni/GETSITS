@@ -194,11 +194,11 @@ class ConsistentTransform(torch.nn.Module):
         return noisy_img
 
 class LeJEPATransform(torch.nn.Module):
-    def __init__(self, h_w=128, degrees=30):
+    def __init__(self, h_w=128, degrees=30, max_scale=1.0):
         super().__init__()
         self.degrees = degrees
         self.transforms = v2.Compose([
-            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.3, 1.0)),
+            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.3, max_scale)),
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomVerticalFlip(p=0.5),
             v2.RandomApply([v2.GaussianBlur(kernel_size=(11,11))], p=0.5)
