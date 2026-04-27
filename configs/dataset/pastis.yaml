@@ -1,0 +1,98 @@
+_target_: getsits.datasets.pastis.Pastis
+dataset_name: Pastis
+root_path: /shared/data/pangaea/PASTIS-HD
+download_url: null
+auto_download: False
+
+img_size: 128
+multi_temporal: 61
+multi_modal: False
+fold_config: 1
+support_test: True
+
+# classes
+ignore_index: 19
+num_classes: 20
+classes: 
+  - Background
+  - Meadow
+  - Soft Winter Wheat
+  - Corn
+  - Winter Barley
+  - Winter Rapeseed
+  - Spring Barley
+  - Sunflower
+  - Grapevine
+  - Beet
+  - Winter Triticale
+  - Winter Durum Wheat
+  - Fruits, Vegetables, Flowers
+  - Potatoes
+  - Leguminous Fodder
+  - Soybeans
+  - Orchard
+  - Mixed Cereal
+  - Sorghum
+  - Void Label
+distribution:
+  - 0.399638
+  - 0.181859
+  - 0.066809
+  - 0.089887
+  - 0.019959
+  - 0.017545
+  - 0.006109
+  - 0.009343
+  - 0.029438
+  - 0.007811
+  - 0.007626
+  - 0.010959
+  - 0.009674
+  - 0.002906
+  - 0.015682
+  - 0.011744
+  - 0.010940
+  - 0.004813
+  - 0.003424
+  - 0.093834
+
+bands:
+  optical:
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B11
+    - B12
+data_mean:
+  optical:
+  - 1161.6764
+  - 1371.4307
+  - 1423.4067
+  - 1759.7251
+  - 2714.5259
+  - 3055.8376
+  - 3197.8960
+  - 3313.3577
+  - 2415.9675
+  - 1626.8431
+data_std:
+  optical:
+  - 2045.0698
+  - 1983.1763
+  - 2060.7969
+  - 1968.8173
+  - 1867.2159
+  - 1885.1361
+  - 1897.5105
+  - 1885.1636
+  - 1542.7665
+  - 1375.2511
+data_min:
+  optical: [-10000., -10000., -10000., -10000., -10000., -10000., -10000., -10000., -10000., -10000.]
+data_max:
+  optical: [22256., 21891., 22626., 21814., 20134., 19282., 18957., 18482., 16935., 14668.] 

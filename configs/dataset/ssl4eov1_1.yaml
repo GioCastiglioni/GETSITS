@@ -1,0 +1,66 @@
+_target_: getsits.datasets.ssl4eov1_1.SSL4EO
+dataset_name: SSL4EO
+root_path: ./datasets/ssl4eov1_1
+download_url: null
+auto_download: False
+
+img_size: 264
+multi_temporal: 4
+multi_modal: False
+fold_config: 1
+support_test: False
+
+# classes
+ignore_index: -1
+num_classes: 1
+classes: 
+  - No Label
+distribution:
+  - 1.0
+
+bands:
+  optical:
+    - B1
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B9
+    - B11
+    - B12
+data_mean:
+  optical:
+  - 1793.243
+  - 1924.863
+  - 2184.553
+  - 2340.936
+  - 2671.402
+  - 3240.082
+  - 3468.412
+  - 3563.244
+  - 3627.704
+  - 3711.071
+  - 3416.714
+  - 2849.625
+data_std:
+  optical:
+  - 1160.144
+  - 1201.092
+  - 1219.943
+  - 1397.225
+  - 1400.035
+  - 1373.136
+  - 1429.17
+  - 1485.025
+  - 1447.836
+  - 1652.703
+  - 1471.002
+  - 1365.307
+data_min:
+  optical: [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,]
+data_max:
+  optical: [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,] 

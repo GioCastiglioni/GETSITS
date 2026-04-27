@@ -1,0 +1,4 @@
+_target_: getsits.utils.losses.LeJEPA
+num_slices: 4096
+lamb: 0.05
+knots: 17

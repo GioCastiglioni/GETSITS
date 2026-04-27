@@ -1,0 +1,105 @@
+_target_: getsits.datasets.msacroptype.SouthAfricaCrops
+dataset_name: south_africa_crops
+root_path: ./datasets/m-SA-crop-type
+download_url: null
+auto_download: false
+img_size: 256
+multi_temporal: 1
+multi_modal: false
+fold_config: null
+support_test: true
+ignore_index: 0
+num_classes: 10
+classes:
+- "No Data"
+- "Lucerne/Medics"
+- "Planted pastures (perennial)"
+- "Fallow"
+- "Wine grapes"
+- "Weeds"
+- "Small grain grazing"
+- "Wheat"
+- "Canola"
+- "Rooibos"
+distribution:
+- 0.450913
+- 0.069323
+- 0.061681
+- 0.053497
+- 0.046783
+- 0.041706
+- 0.073325
+- 0.136774
+- 0.026622
+- 0.039377
+bands:
+  optical:
+  - B1
+  - B2
+  - B3
+  - B4
+  - B5
+  - B6
+  - B7
+  - B8
+  - B8A
+  - B9
+  - B11
+  - B12
+data_mean:
+  optical:
+  - 12.6759
+  - 16.4921
+  - 26.6273
+  - 36.867
+  - 46.5571
+  - 58.3094
+  - 63.5473
+  - 68.0981
+  - 69.048
+  - 69.79
+  - 84.1069
+  - 66.2991
+data_std:
+  optical:
+  - 7.4732
+  - 9.2897
+  - 12.5432
+  - 19.1764
+  - 19.3004
+  - 19.7998
+  - 21.3807
+  - 22.8545
+  - 22.1127
+  - 21.6288
+  - 27.7532
+  - 26.9568
+data_min:
+  optical:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+data_max:
+  optical:
+  - 255.0
+  - 255.0
+  - 255.0
+  - 255.0
+  - 255.0
+  - 255.0
+  - 255.0
+  - 255.0
+  - 255.0
+  - 255.0
+  - 255.0
+  - 255.0
+

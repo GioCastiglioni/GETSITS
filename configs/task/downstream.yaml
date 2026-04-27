@@ -1,0 +1,31 @@
+trainer:
+  _target_: getsits.engine.trainer.SegTrainer
+  # params overwritten in run
+  model: null
+  train_loader: null
+  optimizer: null
+  lr_scheduler: null
+  evaluator: null
+  exp_dir: null
+  device: null
+  criterion: null
+
+  # params to adapt
+  n_epochs: 80
+  precision: bfp16
+  ckpt_interval: 1000
+  eval_interval: 1
+  log_interval: 10
+  best_metric_key: mIoU
+  use_wandb: ${use_wandb}
+
+evaluator:
+  _target_: getsits.engine.evaluator.SegEvaluator
+  distribution: ${dataset.distribution}
+  # params overwritten in run
+  val_loader: null
+  exp_dir: null
+  device: null
+  use_wandb: ${use_wandb}
+
+

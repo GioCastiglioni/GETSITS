@@ -1,0 +1,30 @@
+_target_:  getsits.encoders.convnextV2.ConvNext
+encoder_weights: ./pretrained_models/convnextv2_lesits.pth
+download_url: null
+input_size: 128
+multi_temporal: ${dataset.multi_temporal}
+topology: [80, 160, 320, 640]
+depths: [2, 2, 8, 2]
+positional_encoding: "normal"
+
+input_bands: 
+  optical:
+    - B1
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B9
+    - B11
+    - B12
+
+output_dim:
+  - 80
+  - 160
+  - 320
+  - 640
+
