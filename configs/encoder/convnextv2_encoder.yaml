@@ -1,5 +1,5 @@
 _target_:  getsits.encoders.convnextV2.ConvNext
-encoder_weights: ./pretrained_models/convnextv2_lesits.pth
+encoder_weights: ./pretrained_models/convnextv2_getsits.pth
 download_url: null
 input_size: 128
 multi_temporal: ${dataset.multi_temporal}

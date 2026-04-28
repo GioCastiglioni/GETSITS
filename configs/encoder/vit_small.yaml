@@ -1,6 +1,6 @@
 _target_: getsits.encoders.vit.VIT_Encoder
 model_name: "ViT-Small"
-encoder_weights: ./pretrained_models/vit_s_lesits.pth
+encoder_weights: ./pretrained_models/vit_s_getsits.pth
 download_url: null
 
 embed_dim: 384

@@ -1,6 +1,6 @@
 _target_: getsits.encoders.vit.VIT_Encoder
 model_name: "ViT-Tiny"
-encoder_weights: ./pretrained_models/vit_t_lesits.pth
+encoder_weights: ./pretrained_models/vit_t_getsits.pth
 download_url: null
 
 embed_dim: 192
