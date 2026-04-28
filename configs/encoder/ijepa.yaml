@@ -1,6 +1,6 @@
-_target_: getsits.encoders.anysat.VIT_Encoder
-model_name: "AnySat"
-encoder_weights: "./pretrained_models/anysat_getsits.pth"
+_target_: getsits.encoders.ijepa.VIT_Encoder
+model_name: "I-JEPA"
+encoder_weights: "./pretrained_models/ijepa_getsits.pth"
 download_url: null
 
 embed_dim: 192
@@ -9,7 +9,7 @@ patch_size: 16
 depth: 12
 num_heads: 3
 mlp_ratio: 4
-positional_encoding: "normal"
+positional_encoding: "geotime"
 
 input_bands: 
   optical:

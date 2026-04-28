@@ -9,7 +9,7 @@ patch_size: 16
 num_heads: 6
 depth: 12
 mlp_ratio: 4
-positional_encoding: "normal"
+positional_encoding: "geotime"
 
 input_bands:
   optical:
