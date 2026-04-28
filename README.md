@@ -35,9 +35,7 @@ torchrun --nnodes=1 --nproc_per_node=1 getsits/run.py --config-name=pretrain \
 dataset=ssl4eov1_1 \
 task=pretraining \
 task.trainer.n_epochs=62 \
-task.trainer.log_interval=20 \
 encoder=vit_small \
-encoder.positional_encoding="geotime" \
 decoder=seg_upernet_mt_ltae \
 batch_size=328 \
 test_batch_size=328 \
@@ -58,13 +56,12 @@ export PYTHONPATH=/home/<USER>/GETSITS:$PYTHONPATH
 
 cd /home/<USER>/GETSITS
 
-torchrun --nnodes=1 --nproc_per_node=1 --master_port=$MASTER_PORT cropcon/run.py --config-name=train \
+torchrun --nnodes=1 --nproc_per_node=1 getsits/run.py --config-name=train \
 dataset=pastis \
 task=downstream \
-task.trainer.log_interval=20 \
 task.trainer.n_epochs=45 \
-encoder=vit_small \
-encoder.positional_encoding="geotime" \
+task.trainer.best_metric_key=mIoU \
+encoder=convnextv2_encoder \
 decoder=seg_upernet_mt_ltae \
 decoder.segmentation=True \
 batch_size=4 \
@@ -72,7 +69,7 @@ test_batch_size=4 \
 preprocessing=seg_resize \
 criterion=cross_entropy \
 optimizer.lr=1e-3 \
-optimizer.weight_decay=5e-2 \
+optimizer.weight_decay=5e-4 \
 finetune=True \
 from_scratch=False \
 lr_scheduler=multi_step_lr
