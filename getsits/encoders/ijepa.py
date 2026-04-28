@@ -190,7 +190,7 @@ class VIT_Encoder(Encoder):
     def load_encoder_weights(self, logger: Logger, from_scratch: bool = True) -> None:
         if not from_scratch:
             logger.info(f"Loading pre-trained weights from {self.encoder_weights}...")
-            model_dict = torch.load(self.encoder_weights, map_location="cpu", weights_only=False)
+            model_dict = torch.load(self.encoder_weights, map_location="cpu", weights_only=False)["state_dict"]
             self.load_state_dict(model_dict)
             logger.info("Pre-trained weights loaded successfully.")
         else:pass
