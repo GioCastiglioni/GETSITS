@@ -1,6 +1,6 @@
 # GETSITS: Learning Gaussian Embeddings from Temporal Views of Satellite Image Time Series
 
-This is the official repository of GETSITS, a framework adapting the heuristic-free self-supervised method LeJEPA, for Satellite Image Time Series.
+This is the official repository of GETSITS, a pre-training method to learn Gaussian Embeddings from Satellite Image Time Series.
 
 <img src="getsits.jpg" alt="GETSITS: Learning Gaussian Embeddings from Temporal Views of Satellite Image Time Series">
 
