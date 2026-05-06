@@ -48,7 +48,7 @@ class GeoTemporalEncoder(nn.Module):
 
     def _get_freqs(self, dim):
         half_dim = dim // 2
-        freqs = torch.exp(torch.arange(half_dim, dtype=torch.float32) * -(np.log(10000.0) / half_dim))
+        freqs = torch.arange(1, half_dim + 1, dtype=torch.float32)
         return freqs
 
     def forward(self, doy, lat, lon):
