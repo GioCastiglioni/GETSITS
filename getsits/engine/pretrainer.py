@@ -381,6 +381,7 @@ class Trainer:
         """
         checkpoint = {
             "model": self.model.module.state_dict(),
+            "criterion": self.criterion.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "lr_scheduler": self.lr_scheduler.state_dict(),
             "scaler": self.scaler.state_dict(),
@@ -433,6 +434,7 @@ class Trainer:
         model_dict = torch.load(resume_path, map_location=self.device, weights_only=False)
         if "model" in model_dict:
             self.model.module.load_state_dict(model_dict["model"])
+            self.criterion.load_state_dict(model_dict["criterion"])
             self.optimizer.load_state_dict(model_dict["optimizer"])
             self.lr_scheduler.load_state_dict(model_dict["lr_scheduler"])
             self.scaler.load_state_dict(model_dict["scaler"])
