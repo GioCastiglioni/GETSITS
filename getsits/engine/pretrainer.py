@@ -438,7 +438,7 @@ class Trainer:
             self.optimizer.load_state_dict(model_dict["optimizer"])
             self.lr_scheduler.load_state_dict(model_dict["lr_scheduler"])
             self.scaler.load_state_dict(model_dict["scaler"])
-            self.start_epoch = model_dict["epoch"] + 1
+            self.start_epoch = model_dict["epoch"]
         else:
             self.model.module.load_state_dict(model_dict)
             self.start_epoch = 0
