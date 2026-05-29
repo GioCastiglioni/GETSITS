@@ -140,9 +140,11 @@ class SegEvaluator(Evaluator):
             data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
             image, target = data["image"], data["target"]
                 
-            image = {"v1": image["optical"].to(self.device)}
+            image_dict = {k: v.to(self.device) for k, v in image.items()}
             target = target.to(self.device)
-            logits = model(image["v1"], batch_positions=data["metadata"])
+            
+            # [B, num_classes, H, W]
+            logits = model(image_dict, batch_positions=data["metadata"])
                 
             loss_tensor = self.criterion(logits, target)
             torch.distributed.all_reduce(loss_tensor, op=torch.distributed.ReduceOp.SUM)
@@ -204,10 +206,8 @@ class SegEvaluator(Evaluator):
             fp = confusion_matrix[1]
             fn = confusion_matrix[2]
 
-            # Avoid division by zero
             epsilon = 1e-6
 
-            # Calculate metrics per class
             precision = tp / (tp + fp + epsilon) * 100
             recall = tp / (tp + fn + epsilon) * 100
             f1 = 2 * (precision * recall) / (precision + recall + epsilon)
@@ -239,30 +239,24 @@ class SegEvaluator(Evaluator):
                 keep = torch.arange(confusion_matrix.size(0)) != self.ignore_index
                 confusion_matrix = confusion_matrix[keep][:, keep]
             
-            # Calculate IoU for each class
             intersection = torch.diag(confusion_matrix)
             union = confusion_matrix.sum(dim=1) + confusion_matrix.sum(dim=0) - intersection
             iou = (intersection / (union + 1e-6)) * 100
 
-            # Calculate precision and recall for each class
             precision = intersection / (confusion_matrix.sum(dim=0) + 1e-6) * 100
             recall = intersection / (confusion_matrix.sum(dim=1) + 1e-6) * 100
 
-            # Calculate F1-score for each class
             f1 = 2 * (precision * recall) / (precision + recall + 1e-6)
 
-            # Calculate mean IoU, mean F1-score, and mean Accuracy
             miou = iou.mean().item()
             mf1 = f1.mean().item()
             macc = (intersection.sum() / (confusion_matrix.sum() + 1e-6)).item() * 100
 
-            # Convert metrics to CPU and to Python scalars
             iou = iou.cpu()
             f1 = f1.cpu()
             precision = precision.cpu()
             recall = recall.cpu()
 
-            # Prepare the metrics dictionary
             metrics = {
                 "IoU": [iou[i].item() for i in range(confusion_matrix.size(0))],
                 "mIoU": miou,
@@ -292,7 +286,6 @@ class SegEvaluator(Evaluator):
             )
             return header + metric_str + mean_str
 
-        # Filter out ignored class if necessary
         if self.ignore_index != -1:
             filtered_classes = [c for i, c in enumerate(self.classes) if i != self.ignore_index]
             iou = [v for i, v in enumerate(metrics["IoU"]) if i != self.ignore_index]

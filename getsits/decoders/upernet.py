@@ -503,3 +503,55 @@ class Feature2Pyramid(nn.Module):
         for i in range(len(inputs)):
             outputs.append(self.ops[i](inputs[i]))
         return outputs
+
+
+class SegMMUPerNet(SegUPerNet):
+    def __init__(
+        self,
+        encoder: Encoder,
+        num_classes: int,
+        finetune: bool,
+        channels: int,
+        single_modality_channels: list[int],
+        pool_scales=(1, 2, 3, 6),
+        feature_multiplier: int = 1,
+    ):
+        super().__init__(
+            encoder=encoder,
+            num_classes=num_classes,
+            finetune=finetune,
+            channels=channels,
+            pool_scales=pool_scales,
+            feature_multiplier=feature_multiplier,
+            in_channels=single_modality_channels,
+        )
+        
+        self.model_name = "SegMMUPerNet"
+        self.mm_projectors = nn.ModuleList([
+            nn.Conv2d(enc_ch, sm_ch, kernel_size=1)
+            for enc_ch, sm_ch in zip(self.encoder.output_dim, single_modality_channels)
+        ])
+        
+    def forward_fmaps(self, img: dict[str, torch.Tensor]) -> torch.Tensor:
+        if self.encoder.multi_temporal:
+            if not self.finetune:
+                with torch.no_grad():
+                    feat = self.encoder(img)
+            else:
+                feat = self.encoder(img)
+                
+            if self.encoder.multi_temporal_output:
+                feat = [f.squeeze(-3) for f in feat]
+        else:
+            if not self.finetune:
+                with torch.no_grad():
+                    feat = self.encoder({k: v[:, :, 0, :, :] if v.dim() == 5 else v for k, v in img.items()})
+            else:
+                feat = self.encoder({k: v[:, :, 0, :, :] if v.dim() == 5 else v for k, v in img.items()})
+                
+        proj_feat = [proj(f) for proj, f in zip(self.mm_projectors, feat)]
+        
+        out = self.neck(proj_feat)
+        out = self._forward_feature(out)
+        
+        return out

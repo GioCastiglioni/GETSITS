@@ -15,6 +15,7 @@ from tqdm import tqdm
 from getsits.utils.logger import RunningAverageMeter, sec_to_hm
 from getsits.utils.utils import LeJEPATransform as ConsistentTransform
 from torch.distributed.nn import all_reduce as functional_all_reduce
+
 def all_reduce(x, op="AVG"):
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         op_enum = torch.distributed.ReduceOp.AVG if op.upper() == "AVG" else torch.distributed.ReduceOp.SUM
@@ -98,7 +99,6 @@ class Trainer:
 
         if self.use_wandb:
             import wandb
-
             self.wandb = wandb
         
         self.transform = ConsistentTransform(h_w=self.model.module.input_size, degrees=45).to(self.device)
@@ -118,13 +118,10 @@ class Trainer:
             self._generator_device = device
         self._generator.manual_seed(seed)
         return self._generator
-
     
     def train(self) -> None:
         """Train the model for n_epochs then evaluate the model and save the best model."""
-        # end_time = time.time()
         for epoch in range(self.start_epoch, self.n_epochs):
-            # train the network for one epoch
             if epoch % self.eval_interval == 0:
                 self.logger.info(f"Evaluating epoch {epoch}...")
                 val_loss = self.evaluate(epoch)
@@ -134,7 +131,6 @@ class Trainer:
                 torch.cuda.empty_cache()
 
             self.logger.info("============ Starting epoch %i ... ============" % epoch)
-            # set sampler
             self.t = time.time()
             self.train_loader.sampler.set_epoch(epoch)
             self.train_one_epoch(epoch)
@@ -144,9 +140,7 @@ class Trainer:
         val_loss = self.evaluate(self.n_epochs)
         self.save_best_checkpoint(val_loss, self.n_epochs)
 
-        # save last model
         self.save_model(self.n_epochs, is_final=True)
-
         torch.cuda.empty_cache()
 
     def train_one_epoch(self, epoch: int) -> None:
@@ -178,11 +172,9 @@ class Trainer:
                     global_views = []
                     local_views = []
                     with torch.no_grad():
-                        # Synchronize global_step_views across all ranks
                         global_step_sync = all_reduce(self.criterion.global_step_views.clone(), op="MAX")
                         seed = global_step_sync.item()
 
-                        # Get reusable generator
                         g = self._get_generator(self.device, seed)
 
                         local_indexes = torch.randint(0, T, (self.n_local//self.n_global,), generator=g, device=self.device).long()
@@ -202,9 +194,15 @@ class Trainer:
 
             else:
                 anysat_flag = True
-                img = self.temporal_transform(data["image"]["optical"].to(self.device))
-                with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
-                    loss = self.criterion(img, self.model, batch_positions=data["metadata"])
+                if str(self.criterion) == "CoMMLoss":
+                    img_dict = {k: v.to(self.device) for k, v in data["image"].items()}
+                    img_dict = self.temporal_transform(img_dict)
+                    with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
+                        loss = self.criterion(img_dict, self.model, batch_positions=data["metadata"])
+                else:
+                    img = self.temporal_transform(data["image"]["optical"].to(self.device))
+                    with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
+                        loss = self.criterion(img, self.model, batch_positions=data["metadata"])
                 
             self.optimizer.zero_grad()
 
@@ -224,7 +222,6 @@ class Trainer:
             self.lr_scheduler.step()
 
             if self.use_wandb and self.rank == 0:
-
                 self.wandb.log(
                     {
                         "train_loss": loss.item(),
@@ -322,9 +319,16 @@ class Trainer:
             total_epoch_loss = 0
             for batch_idx, data in enumerate(self.val_loader):
                 data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
-                img = self.temporal_transform(data["image"]["optical"].to(self.device))
-                with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
-                    total_epoch_loss += self.criterion(img, self.model, batch_positions=data["metadata"]).item()
+                
+                if str(self.criterion) == "CoMMLoss":
+                    img_dict = {k: v.to(self.device) for k, v in data["image"].items()}
+                    img_dict = self.temporal_transform(img_dict)
+                    with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
+                        total_epoch_loss += self.criterion(img_dict, self.model, batch_positions=data["metadata"]).item()
+                else:
+                    img = self.temporal_transform(data["image"]["optical"].to(self.device))
+                    with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
+                        total_epoch_loss += self.criterion(img, self.model, batch_positions=data["metadata"]).item()
 
                 torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
 
@@ -345,22 +349,35 @@ class Trainer:
                 
             return final_val_loss
             
-
     @torch.no_grad()
-    def temporal_transform(self, x: torch.Tensor):
-        """
-        x:     [B, C, T, H, W]
-        """
+    def temporal_transform(self, x: torch.Tensor | dict[str, torch.Tensor]):
+        if isinstance(x, dict):
+            keys = list(x.keys())
+            tensors = [x[k] for k in keys]
+            splits = [t.shape[1] for t in tensors]
+            
+            # [B, sum(C), T, H, W]
+            x_concat = torch.cat(tensors, dim=1)
+            
+            x_out = self._do_temporal_transform(x_concat)
+            
+            # [B, C_i, T, H, W]
+            x_split = torch.split(x_out, splits, dim=1)
+            return {k: v for k, v in zip(keys, x_split)}
+        else:
+            return self._do_temporal_transform(x)
+
+    def _do_temporal_transform(self, x: torch.Tensor):
         B, C, Temp, H, W = x.shape
 
-        # Reshape into [B*T, C, H, W]
-        x = x.permute(0, 2, 1, 3, 4).reshape(B*Temp, C, H, W)  # → [B*T, C, H, W]
+        # [B*T, C, H, W]
+        x = x.permute(0, 2, 1, 3, 4).reshape(B*Temp, C, H, W)
 
-        # Prepare output tensor
         x_out = torch.empty((B,C,Temp,H,W), device=x.device)
 
         for b in range(B):
-            x_b = x[b*Temp:(b+1)*Temp]  # [T, C, H, W]
+            # [T, C, H, W]
+            x_b = x[b*Temp:(b+1)*Temp]
 
             sample = self.transform({"image": x_b})
 
@@ -474,7 +491,6 @@ class Trainer:
             batch_idx (int): number of the batch.
             epoch (_type_): number of the epoch.
         """
-        # TO DO: upload to wandb
         left_batch_this_epoch = self.batch_per_epoch - batch_idx
         left_batch_all = (
             self.batch_per_epoch * (self.n_epochs - epoch - 1) + left_batch_this_epoch
@@ -501,4 +517,3 @@ class Trainer:
         )
 
         self.logger.info(basic_info)
-

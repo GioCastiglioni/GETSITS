@@ -1,0 +1,3 @@
+_target_: getsits.utils.losses.CoMMLoss
+temperature: 0.1
+projection_dim: 256

@@ -175,7 +175,6 @@ class Pastis(RawGeoFMDataset):
             self.meta_patch = pd.concat(
                 [self.meta_patch[self.meta_patch["Fold"] == f] for f in folds]
             )
-
     def __getitem__(self, i: int) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Get the item at index i.
 
@@ -183,11 +182,7 @@ class Pastis(RawGeoFMDataset):
             i (int): index of the item.
 
         Returns:
-            dict[str, torch.Tensor | dict[str, torch.Tensor]]: output dictionary follwing the format
-            {"image":
-                {"optical": torch.Tensor},
-            "target": torch.Tensor,
-             "metadata": dict}.
+            dict[str, torch.Tensor | dict[str, torch.Tensor]]: output dictionary.
         """
         line = self.meta_patch.iloc[i // (self.nb_split * self.nb_split)]
         name = line["ID_PATCH"]
@@ -267,8 +262,8 @@ class Pastis(RawGeoFMDataset):
                     self.reference_date,
                 )
                 l = []
-                for i in range(4):
-                    mask = (dates >= 92 * i) & (dates < 92 * (i + 1))
+                for j in range(4):
+                    mask = (dates >= 92 * j) & (dates < 92 * (j + 1))
                     if sum(mask) > 0:
                         r, _ = torch.median(images[mask], dim=0)
                         l.append(r)
@@ -299,8 +294,8 @@ class Pastis(RawGeoFMDataset):
                     self.reference_date,
                 )
                 l = []
-                for i in range(4):
-                    mask = (dates >= 92 * i) & (dates < 92 * (i + 1))
+                for j in range(4):
+                    mask = (dates >= 92 * j) & (dates < 92 * (j + 1))
                     if sum(mask) > 0:
                         r, _ = torch.median(images[mask], dim=0)
                         l.append(r)
@@ -357,30 +352,37 @@ class Pastis(RawGeoFMDataset):
                     ][random_indices]
 
         optical_ts = rearrange(output["s2"], "t c h w -> c t h w")
+        sar_ts = rearrange(output["s1-asc"], "t c h w -> c t h w")
 
         if self.multi_temporal == 1:
-            # we only take the last frame
             optical_indexes = torch.Tensor([-1]).long()
             optical_ts = optical_ts[:, optical_indexes]
+            
+            sar_indexes = torch.Tensor([-1]).long()
+            sar_ts = sar_ts[:, sar_indexes]
 
             metadata = torch.Tensor([output["s2_dates"][optical_indexes].float()])
         else:
-            # select evenly spaced samples
             optical_indexes = torch.linspace(
                 0, optical_ts.shape[1] - 1, self.multi_temporal, dtype=torch.long
             )
-
             optical_ts = optical_ts[:, optical_indexes]
+            
+            sar_indexes = torch.linspace(
+                0, sar_ts.shape[1] - 1, self.multi_temporal, dtype=torch.long
+            )
+            sar_ts = sar_ts[:, sar_indexes]
 
             metadata = output["s2_dates"][optical_indexes].float()
 
-            doy_norm = ((metadata + self.ref_doy - 1) % 365) / 365
-            lat_norm = torch.tensor(lat, dtype=torch.float32) / 90.0
-            lon_norm = torch.tensor(lon, dtype=torch.float32) / 180.0
+        doy_norm = ((metadata + self.ref_doy - 1) % 365) / 365
+        lat_norm = torch.tensor(lat, dtype=torch.float32) / 90.0
+        lon_norm = torch.tensor(lon, dtype=torch.float32) / 180.0
 
         return {
             "image": {
                 "optical": optical_ts.to(torch.float32),
+                "sar": sar_ts.to(torch.float32),
             },
             "target": output["label"].to(torch.int64),
             "metadata": {

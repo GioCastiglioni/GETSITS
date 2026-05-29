@@ -99,14 +99,11 @@ class Trainer:
 
         if self.use_wandb:
             import wandb
-
             self.wandb = wandb
     
     def train(self) -> None:
         """Train the model for n_epochs then evaluate the model and save the best model."""
-        # end_time = time.time()
         for epoch in range(self.start_epoch, self.n_epochs):
-            # train the network for one epoch
             if epoch % self.eval_interval == 0:
                 metrics, used_time = self.evaluator(self.model, f"epoch {epoch}")
                 self.training_stats["eval_time"].update(used_time)
@@ -116,7 +113,6 @@ class Trainer:
                 torch.cuda.empty_cache()
 
             self.logger.info("============ Starting epoch %i ... ============" % epoch)
-            # set sampler
             self.t = time.time()
             self.train_loader.sampler.set_epoch(epoch)
             self.train_one_epoch(epoch)
@@ -127,7 +123,6 @@ class Trainer:
         self.training_stats["eval_time"].update(used_time)
         self.save_best_checkpoint(metrics, self.n_epochs)
 
-        # save last model
         self.save_model(self.n_epochs, is_final=True)
 
         del metrics
@@ -148,7 +143,7 @@ class Trainer:
             
             data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
             image, target = data["image"], data["target"]
-            image = image["optical"].to(self.device)
+            image = {k: v.to(self.device) for k, v in image.items()}
             target = target.to(self.device)
 
             self.training_stats["data_time"].update(time.time() - end_time)
@@ -199,15 +194,27 @@ class Trainer:
             torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
         return 
     
-    def temporal_transform(self, x: torch.Tensor, mask: torch.Tensor):
-        """
-        x:    [B, C, T, H, W]
-        mask: [B, H, W]
-        
-        Returns:
-            x_out:    [B, C, T, H_new, W_new]
-            mask_out: [B, H_new, W_new]
-        """
+    @torch.no_grad()
+    def temporal_transform(self, x: torch.Tensor | dict[str, torch.Tensor], mask: torch.Tensor):
+        if isinstance(x, dict):
+            keys = list(x.keys())
+            tensors = [x[k] for k in keys]
+            splits = [t.shape[1] for t in tensors]
+            
+            # [B, sum(C), T, H, W]
+            x_concat = torch.cat(tensors, dim=1)
+            
+            x_out, mask_out = self._do_temporal_transform(x_concat, mask)
+            
+            # [B, C_i, T, H, W]
+            x_split = torch.split(x_out, splits, dim=1)
+            out_dict = {k: v for k, v in zip(keys, x_split)}
+            
+            return out_dict, mask_out
+        else:
+            return self._do_temporal_transform(x, mask)
+
+    def _do_temporal_transform(self, x: torch.Tensor, mask: torch.Tensor):
         B, C, Temp, H, W = x.shape
 
         x = x.permute(0, 2, 1, 3, 4)
@@ -506,14 +513,10 @@ class SegTrainer(Trainer):
             preds = (probs > 0.5).bool()
             targets_bool = target.bool()
 
-            # TP (True Positives)
             intersection = torch.logical_and(preds, targets_bool).sum(dim=0)
-            # Union (TP + FP + FN)
             union = torch.logical_or(preds, targets_bool).sum(dim=0)
             
-            # Real Positives (TP + FN) -> Soporte
             target_count = targets_bool.sum(dim=0)
-            # Predicted Positives (TP + FP)
             pred_count = preds.sum(dim=0)
 
             epsilon = 1e-6
@@ -574,6 +577,3 @@ class SegTrainer(Trainer):
         self.training_metrics["Acc"].update(acc.item())
         self.training_metrics["mAcc"].update(macc.item())
         self.training_metrics["mIoU"].update(miou.item())
-
-
-    
