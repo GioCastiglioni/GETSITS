@@ -193,7 +193,7 @@ class Trainer:
                         loss = loss + 0.0 * sum(p.sum() for p in self.model.module.parameters())
 
             else:
-                anysat_flag = True
+                anysat_flag = (str(self.criterion) == "AnySatJEPA")
                 if str(self.criterion) == "CoMMLoss":
                     img_dict = {k: v.to(self.device) for k, v in data["image"].items()}
                     img_dict = self.temporal_transform(img_dict)
@@ -268,7 +268,7 @@ class Trainer:
             total_sigreg = 0.0
             
             end_time = time.time()
-            for batch_idx, data in enumerate(tqdm(self.val_loader)):
+            for batch_idx, data in enumerate(tqdm(self.val_loader, desc=f"Evaluating Epoch {epoch}", disable=self.rank != 0)):
 
                 data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
                 image = data["image"]["optical"].to(self.device)
@@ -317,7 +317,7 @@ class Trainer:
             return final_val_loss
         else:
             total_epoch_loss = 0
-            for batch_idx, data in enumerate(self.val_loader):
+            for batch_idx, data in enumerate(tqdm(self.val_loader, desc=f"Evaluating Epoch {epoch}", disable=self.rank != 0)):
                 data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
                 
                 if str(self.criterion) == "CoMMLoss":
@@ -356,12 +356,10 @@ class Trainer:
             tensors = [x[k] for k in keys]
             splits = [t.shape[1] for t in tensors]
             
-            # [B, sum(C), T, H, W]
             x_concat = torch.cat(tensors, dim=1)
             
             x_out = self._do_temporal_transform(x_concat)
             
-            # [B, C_i, T, H, W]
             x_split = torch.split(x_out, splits, dim=1)
             return {k: v for k, v in zip(keys, x_split)}
         else:
@@ -370,13 +368,11 @@ class Trainer:
     def _do_temporal_transform(self, x: torch.Tensor):
         B, C, Temp, H, W = x.shape
 
-        # [B*T, C, H, W]
         x = x.permute(0, 2, 1, 3, 4).reshape(B*Temp, C, H, W)
 
         x_out = torch.empty((B,C,Temp,H,W), device=x.device)
 
         for b in range(B):
-            # [T, C, H, W]
             x_b = x[b*Temp:(b+1)*Temp]
 
             sample = self.transform({"image": x_b})

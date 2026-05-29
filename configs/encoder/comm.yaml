@@ -1,36 +1,32 @@
-_target_: getsits.encoders.vit.VIT_Encoder
-model_name: "ViT-Tiny"
-encoder_weights: ./pretrained_models/vit_t_getsits.pth
-download_url: null
+defaults:
+  - /encoder@encoders.optical: vit_small
+  - /encoder@encoders.sar: vit_small
+  - _self_
 
-embed_dim: 192
+_target_: getsits.encoders.comm.CoMMEncoder
+model_name: "CoMM"
 input_size: 224
-patch_size: 16
-depth: 12
-num_heads: 3
-mlp_ratio: 4
-positional_encoding: "geotime"
+input_bands:
+  optical: ${encoder.encoders.optical.input_bands.optical}
+  sar: ${encoder.encoders.sar.input_bands.sar}
+embed_dim: 256
+output_layers: [1, 2, 3, 4]
+output_dim: [768, 768, 768, 512] 
+multi_temporal: False
+multi_temporal_output: False
+pyramid_output: False
+encoder_weights: ""
+download_url: ""
+num_heads: 8
+depth: 1
+modalities_finetune:
+  optical: True
+  sar: True
+modalities_from_scratch:
+  optical: False
+  sar: False
 
-input_bands: 
-  optical:
-    - B1
-    - B2
-    - B3
-    - B4
-    - B5
-    - B6
-    - B7
-    - B8
-    - B8A
-    - B9
-    - B11
-    - B12
-
-  
-output_layers:
-  - 3
-  - 5
-  - 7
-  - 11
-
-output_dim: 192
+encoders:
+  sar:
+    input_bands:
+      sar: ['VV', 'VH']

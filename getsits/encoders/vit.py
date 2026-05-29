@@ -65,7 +65,11 @@ class VIT_Encoder(Encoder):
         )
 
         self.patch_size = patch_size
-        self.in_chans = len(input_bands["optical"])
+        
+        valid_bands = {k: v for k, v in input_bands.items() if v is not None}
+        self.modality = list(valid_bands.keys())[-1]
+        self.in_chans = len(valid_bands[self.modality])
+        
         self.patch_embed = PatchEmbed(
             input_size, patch_size, in_chans=self.in_chans, embed_dim=embed_dim
         )
@@ -74,7 +78,7 @@ class VIT_Encoder(Encoder):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(
             torch.zeros(1, num_patches + 1, embed_dim), requires_grad=False
-        )  # fixed sin-cos embedding
+        )  
         self.topology = [output_dim for _ in self.output_layers]
         self.init_std = init_std
 
@@ -138,21 +142,29 @@ class VIT_Encoder(Encoder):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x, batch_positions=None, projection = False):
+    def forward(self, x, batch_positions=None, projection=False):
         if projection: return self.projector(x)
-        x = x.permute(0, 2, 1, 3, 4)  # (B, T, C, H, W)
+        
+        if isinstance(x, dict):
+            x = x.get(self.modality, list(x.values())[0])
+
+        is_4d = x.dim() == 4
+        if is_4d:
+            x = x.unsqueeze(2)
+
+        x = x.permute(0, 2, 1, 3, 4)  
         B, T, C, H, W = x.shape
 
         pad_mask = (
             (x == 0).all(dim=-1).all(dim=-1).all(dim=-1)
-        )  # (B, T) pad mask
+        )  
 
         x = x.reshape(B * T, C, H, W)
         x = self.patch_embed(x)
 
         cls_tokens = self.cls_token.expand(
             x.shape[0], -1, -1
-        )  # stole cls_tokens impl from Phil Wang, thanks
+        )  
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
 
@@ -180,10 +192,13 @@ class VIT_Encoder(Encoder):
         ]
 
         out, att = self.tmap(
-            output[-1].permute(0, 2, 1, 3, 4),        # (B, C, T, H, W)
+            output[-1].permute(0, 2, 1, 3, 4),        
             batch_positions=batch_positions,
             pad_mask=pad_mask,
         )
+
+        if is_4d:
+            output = [fm.squeeze(1) for fm in output]
 
         return out, output, pad_mask, att
     
@@ -197,4 +212,3 @@ class VIT_Encoder(Encoder):
 
     def __str__(self):
         return self.model_name
-

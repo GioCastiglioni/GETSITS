@@ -1,27 +1,35 @@
 import torch
 import torch.nn as nn
-from hydra.utils import instantiate
 from getsits.encoders.base import Encoder
 
 class CoMMEncoder(Encoder):
     def __init__(
         self,
         model_name: str,
-        input_bands: dict,
-        input_size: int,
+        encoders: dict,
         embed_dim: int,
         output_layers: list,
         output_dim: list,
         multi_temporal: bool,
         multi_temporal_output: bool,
         pyramid_output: bool,
-        encoder_weights: str,
-        download_url: str,
-        encoders_config: dict,
+        modalities_finetune: dict = None,
+        modalities_from_scratch: dict = None,
+        encoder_weights: str = "",
+        download_url: str = "",
         num_heads: int = 8,
         depth: int = 1,
-        positional_encoding: str = "normal"
+        positional_encoding: str = "normal",
+        input_size: int = 224,
+        input_bands: dict = None,
+        **kwargs
     ) -> None:
+        if input_bands is None:
+            input_bands = {}
+            for enc in encoders.values():
+                if hasattr(enc, 'input_bands') and isinstance(enc.input_bands, dict):
+                    input_bands.update(enc.input_bands)
+                    
         super().__init__(
             model_name=model_name,
             input_bands=input_bands,
@@ -37,9 +45,12 @@ class CoMMEncoder(Encoder):
             positional_encoding=positional_encoding
         )
         
-        self.encoders = nn.ModuleDict()
-        for mod, cfg in encoders_config.items():
-            self.encoders[mod] = instantiate(cfg)
+        self.topology = self.output_dim
+        
+        self.modalities_finetune = modalities_finetune if modalities_finetune is not None else {}
+        self.modalities_from_scratch = modalities_from_scratch if modalities_from_scratch is not None else {}
+
+        self.encoders = nn.ModuleDict(encoders)
         self.modalities = list(self.encoders.keys())
         
         self.latent_converters = nn.ModuleDict()
@@ -53,39 +64,60 @@ class CoMMEncoder(Encoder):
         encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=depth)
         
+        self._freeze_modalities()
+
+    def _freeze_modalities(self):
+        for mod in self.modalities:
+            if not self.modalities_finetune.get(mod, True):
+                for param in self.encoders[mod].parameters():
+                    param.requires_grad = False
+                for param in self.latent_converters[mod].parameters():
+                    param.requires_grad = False
+
+    def load_encoder_weights(self, logger, from_scratch=False):
+        for mod in self.modalities:
+            mod_from_scratch = self.modalities_from_scratch.get(mod, from_scratch)
+            if hasattr(self.encoders[mod], 'load_encoder_weights'):
+                self.encoders[mod].load_encoder_weights(logger, from_scratch=mod_from_scratch)
+            else:
+                logger.info(f"Modality '{mod}' does not support weight loading via load_encoder_weights.")
+        
     def forward(self, x: dict, batch_positions=None):
         features = {}
+        temporal_reduced = {}
+        
         for mod in self.modalities:
             mod_input = {mod: x[mod]}
             if batch_positions is not None:
-                out = self.encoders[mod](mod_input, batch_positions=batch_positions)
+                out_tuple = self.encoders[mod](mod_input, batch_positions=batch_positions)
             else:
-                out = self.encoders[mod](mod_input)
+                out_tuple = self.encoders[mod](mod_input)
                 
-            if isinstance(out, tuple):
-                features[mod] = out[1]
+            if isinstance(out_tuple, tuple):
+                temporal_reduced[mod] = out_tuple[0]  
+                features[mod] = out_tuple[1]         
             else:
-                features[mod] = out
+                features[mod] = out_tuple
+                temporal_reduced[mod] = out_tuple[-1]
                 
         num_levels = len(features[self.modalities[0]])
         out_features = []
         
         for i in range(num_levels - 1):
-            # [B, C_total, H, W]
-            level_feat = torch.cat([features[mod][i] for mod in self.modalities], dim=1)
+            dim_c = 2 if features[self.modalities[0]][i].dim() == 5 else 1
+            level_feat = torch.cat([features[mod][i] for mod in self.modalities], dim=dim_c)
             out_features.append(level_feat)
             
         seqs = []
-        spatial_shape = features[self.modalities[0]][-1].shape[-2:]
+        spatial_shape = temporal_reduced[self.modalities[0]].shape[-2:]
         
         for mod in self.modalities:
-            last_feat = features[mod][-1]
+            last_feat = temporal_reduced[mod] 
             seq = self.latent_converters[mod](last_feat) 
             seq = seq.transpose(1, 2) 
             seqs.append(seq)
             
-        # [B, N_mod * H * W, embed_dim]
-        concat_seq = torch.cat(seqs, dim=1)
+        concat_seq = torch.cat(seqs, dim=1) 
         
         fused = self.transformer(concat_seq)
         
@@ -97,7 +129,7 @@ class CoMMEncoder(Encoder):
             ms = ms.transpose(1, 2).reshape(B, self.embed_dim, spatial_shape[0], spatial_shape[1])
             fused_maps.append(ms)
             
-        final_feat = torch.cat(fused_maps, dim=1)
+        final_feat = torch.cat(fused_maps, dim=1) 
         out_features.append(final_feat)
         
         return out_features

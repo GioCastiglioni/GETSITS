@@ -1199,3 +1199,18 @@ def _setup_size(size, error_msg):
 
     return size
 
+class ResizeNoTarget(Resize):
+    def __init__(
+        self,
+        interpolation=T.InterpolationMode.BILINEAR,
+        antialias: Optional[bool] = True,
+        **meta,
+    ) -> None:
+        size = meta["encoder_input_size"]
+        super().__init__(
+            size=size, 
+            interpolation=interpolation, 
+            antialias=antialias, 
+            resize_target=False, 
+            **meta
+        )

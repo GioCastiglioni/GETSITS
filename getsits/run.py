@@ -87,14 +87,7 @@ def broadcast_string(value: str, src: int = 0):
 
 @hydra.main(version_base=None, config_path="../configs", config_name="train")
 def main(cfg: DictConfig) -> None:
-    """Geofm-bench main function.
-
-    Args:
-        cfg (DictConfig): main_config
-    """
-    # fix all random seeds
     fix_seed(cfg.seed)
-    # distributed training variables
     local_rank = int(os.environ["LOCAL_RANK"])
     device = torch.device("cuda", local_rank)
 
@@ -107,14 +100,12 @@ def main(cfg: DictConfig) -> None:
     else:
         rank = int(os.environ["RANK"])
         is_distributed = False
-
     
     if cfg.pretrain:
         from getsits.engine.pretrainer import Trainer
     else:
         from getsits.engine.trainer import Trainer
 
-    # true if training else false
     train_run = cfg.train
     if train_run:
         exp_info = get_shared_exp_info(HydraConfig.get(), is_distributed, rank)
@@ -195,6 +186,8 @@ def main(cfg: DictConfig) -> None:
 
     def params_extractor(model: nn.Module, encoder=False, projector=False) -> iter:
         for name, param in model.named_parameters():
+            if not param.requires_grad: 
+                continue
             if not "tmap" in name:
                 if encoder:
                     if projector:
@@ -213,9 +206,7 @@ def main(cfg: DictConfig) -> None:
     modalities = list(encoder.input_bands.keys())
     collate_fn = get_collate_fn(modalities)
 
-    # training
     if train_run:
-        # get preprocessor
         train_preprocessor = instantiate(
             cfg.preprocessing.train,
             dataset_cfg=cfg.dataset,
@@ -229,7 +220,6 @@ def main(cfg: DictConfig) -> None:
             _recursive_=False,
         )
 
-        # get datasets
         raw_train_dataset: RawGeoFMDataset = instantiate(cfg.dataset, split="train")
         raw_val_dataset: RawGeoFMDataset = instantiate(cfg.dataset, split="val")
 
@@ -256,7 +246,6 @@ def main(cfg: DictConfig) -> None:
                 torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
 
             indices = torch.load(indices_file, weights_only=False)
-
             raw_train_dataset = GeoFMSubset(raw_train_dataset, indices)
 
         if 0 < cfg.limited_label_val < 1:
@@ -284,14 +273,13 @@ def main(cfg: DictConfig) -> None:
             f"Total number of validation patches: {len(val_dataset)}\n"
         )
 
-        # get train val data loaders
         train_loader = DataLoader(
             train_dataset,
             sampler=DistributedSampler(train_dataset, drop_last=True, shuffle=True),
             batch_size=cfg.batch_size,
             num_workers=cfg.num_workers,
             pin_memory=True,
-            persistent_workers=False, #causes memory leak
+            persistent_workers=False,
             worker_init_fn=seed_worker,
             generator=get_generator(cfg.seed),
             drop_last=True,
@@ -304,9 +292,8 @@ def main(cfg: DictConfig) -> None:
             batch_size=cfg.test_batch_size,
             num_workers=cfg.test_num_workers,
             pin_memory=True,
-            persistent_workers=False, #causes memory leak
+            persistent_workers=False,
             worker_init_fn=seed_worker,
-            # generator=g,
             drop_last=True,
             collate_fn=collate_fn,
         )
@@ -336,8 +323,8 @@ def main(cfg: DictConfig) -> None:
         params=[]
 
         if not cfg.pretrain:
-            if str(decoder.module.encoder) != "OlmoEarth" and str(decoder.module.encoder) != "GalileoTiny":
-                params.append({'params': decoder.module.encoder.tmap.parameters(), 'lr': cfg.optimizer.lr})
+            if hasattr(decoder.module.encoder, 'tmap'):
+                params.append({'params': filter(lambda p: p.requires_grad, decoder.module.encoder.tmap.parameters()), 'lr': cfg.optimizer.lr})
 
             params.append({'params': params_extractor(decoder.module, encoder=False, projector=(not cfg.decoder.segmentation)), 'lr': cfg.optimizer.lr})
             if cfg.finetune:
@@ -350,9 +337,9 @@ def main(cfg: DictConfig) -> None:
                         find_unused_parameters=True,
                     )
 
-            params.append({'params': encoder_model.module.parameters(), 'lr': cfg.optimizer.lr})
+            params.append({'params': filter(lambda p: p.requires_grad, encoder_model.module.parameters()), 'lr': cfg.optimizer.lr})
             if "AnySatJEPALoss" in cfg.criterion._target_:
-                params.append({'params': criterion.module.predictor.parameters(), 'lr': cfg.optimizer.lr})
+                params.append({'params': filter(lambda p: p.requires_grad, criterion.module.predictor.parameters()), 'lr': cfg.optimizer.lr})
 
         optimizer = instantiate(cfg.optimizer, params=None)
         optimizer = optimizer(params=params)
@@ -402,7 +389,7 @@ def main(cfg: DictConfig) -> None:
         trainer.train()
 
     if not cfg.pretrain:
-        if True: #<---- deprecated condition
+        if True: # deprecated condition
             if not isinstance(decoder, torch.nn.parallel.DistributedDataParallel):
                 decoder = torch.nn.parallel.DistributedDataParallel(
                     decoder,
@@ -412,14 +399,12 @@ def main(cfg: DictConfig) -> None:
                 )
             criterion = instantiate(cfg.criterion)
             criterion = criterion.to(device)
-            # Evaluation
             test_preprocessor = instantiate(
                 cfg.preprocessing.test,
                 dataset_cfg=cfg.dataset,
                 encoder_cfg=cfg.encoder,
                 _recursive_=False,
             )
-            # get datasets
             raw_test_dataset: RawGeoFMDataset = instantiate(cfg.dataset, split="test")
             test_dataset = GeoFMDataset(raw_test_dataset, test_preprocessor)
 
@@ -429,7 +414,7 @@ def main(cfg: DictConfig) -> None:
                 batch_size=cfg.test_batch_size,
                 num_workers=cfg.test_num_workers,
                 pin_memory=True,
-                persistent_workers=False, #causes memory leak
+                persistent_workers=False, 
                 drop_last=True,
                 collate_fn=collate_fn,
             )
