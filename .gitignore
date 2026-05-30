@@ -14,7 +14,7 @@ pretrained/
 pretrained_models/
 work-dir/
 wandb/
-results/
+results*/
 data/*
 data
 pretrained_models
