@@ -1,5 +1,3 @@
-# Source: https://github.com/cloudtostreet/Sen1Floods11
-
 import os
 
 import geopandas
@@ -38,38 +36,6 @@ class Sen1Floods11(RawGeoFMDataset):
         support_test: bool,
         fold_config: int,
     ):
-        """Initialize the Sen1Floods11 dataset.
-        Link: https://github.com/cloudtostreet/Sen1Floods11
-
-        Args:
-            split (str): split of the dataset (train, val, test).
-            dataset_name (str): dataset name.
-            multi_modal (bool): if the dataset is multi-modal.
-            multi_temporal (int): number of temporal frames.
-            root_path (str): root path of the dataset.
-            classes (list): classes of the dataset.
-            num_classes (int): number of classes.
-            ignore_index (int): index to ignore for metrics and loss.
-            img_size (int): size of the image.
-            bands (dict[str, list[str]]): bands of the dataset.
-            distribution (list[int]): class distribution.
-            data_mean (dict[str, list[str]]): mean for each band for each modality.
-            Dictionary with keys as the modality and values as the list of means.
-            e.g. {"s2": [b1_mean, ..., bn_mean], "s1": [b1_mean, ..., bn_mean]}
-            data_std (dict[str, list[str]]): str for each band for each modality.
-            Dictionary with keys as the modality and values as the list of stds.
-            e.g. {"s2": [b1_std, ..., bn_std], "s1": [b1_std, ..., bn_std]}
-            data_min (dict[str, list[str]]): min for each band for each modality.
-            Dictionary with keys as the modality and values as the list of mins.
-            e.g. {"s2": [b1_min, ..., bn_min], "s1": [b1_min, ..., bn_min]}
-            data_max (dict[str, list[str]]): max for each band for each modality.
-            Dictionary with keys as the modality and values as the list of maxs.
-            e.g. {"s2": [b1_max, ..., bn_max], "s1": [b1_max, ..., bn_max]}
-            download_url (str): url to download the dataset.
-            auto_download (bool): whether to download the dataset automatically.
-            gcs_bucket (str): subset for downloading the dataset.
-        """
-
         self.gcs_bucket = gcs_bucket
 
         super(Sen1Floods11, self).__init__(
@@ -132,6 +98,10 @@ class Sen1Floods11(RawGeoFMDataset):
 
         file_list = [f.rstrip().split(",") for f in file_list]
 
+        self.s1_image_list = [
+            os.path.join(data_root, "S1Hand", f[0]) 
+            for f in file_list
+        ]
         self.s2_image_list = [
             os.path.join(data_root, "S2Hand", f[0].replace("S1Hand", "S2Hand"))
             for f in file_list
@@ -169,6 +139,10 @@ class Sen1Floods11(RawGeoFMDataset):
         with rasterio.open(self.s2_image_list[index]) as src:
             s2_image = src.read()
 
+        with rasterio.open(self.s1_image_list[index]) as src:
+            s1_image = src.read()
+            s1_image = np.nan_to_num(s1_image)
+
         with rasterio.open(self.target_list[index]) as src:
             target = src.read(1)
 
@@ -178,12 +152,15 @@ class Sen1Floods11(RawGeoFMDataset):
         lat_norm = torch.tensor(lat, dtype=torch.float32) / 90.0
         lon_norm = torch.tensor(lon, dtype=torch.float32) / 180.0
 
+        # [C, 1, H, W]
         s2_image = torch.from_numpy(s2_image).float().unsqueeze(1)
+        s1_image = torch.from_numpy(s1_image).float().unsqueeze(1)
         target = torch.from_numpy(target).long()
 
         output = {
             "image": {
                 "optical": s2_image,
+                "sar": s1_image,
             },
             "target": target,
             "metadata": {

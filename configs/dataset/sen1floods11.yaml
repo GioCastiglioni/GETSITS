@@ -10,7 +10,7 @@ fold_config: 1
 
 img_size: 512
 multi_temporal: 1
-multi_modal: False
+multi_modal: True
 
 ignore_index: -1
 num_classes: 2
@@ -36,6 +36,9 @@ bands:
     - B10
     - B11
     - B12
+  sar:
+    - VV
+    - VH
 data_mean:
   optical:
     - 1626.91600224
@@ -51,6 +54,9 @@ data_mean:
     - 63.77861008
     - 2030.64763024
     - 1179.16607221
+  sar:
+    - -10.184408 
+    - -16.895273
 
 data_std:
   optical:
@@ -67,6 +73,9 @@ data_std:
     - 143.99923282
     - 980.87061347
     - 764.60836557
+  sar:
+    - 4.255339 
+    - 5.290568
 
 data_max:
   optical:
@@ -83,6 +92,9 @@ data_max:
     - 1426
     - 14093
     - 13472
+  sar:
+    - 29.926394
+    - 17.376385
 data_min:
   optical:
     - 0
@@ -98,3 +110,6 @@ data_min:
     - 0
     - 0
     - 0
+  sar:
+    - -65.45004
+    - -79.161446
