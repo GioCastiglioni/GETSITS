@@ -63,6 +63,18 @@ class CoMMEncoder(Encoder):
             
         encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=depth)
+
+        self.projector = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(1),
+            nn.Linear(self.topology[-1], 2048),
+            nn.LayerNorm(normalized_shape=2048),
+            nn.GELU(),
+            nn.Linear(2048, 2048),
+            nn.LayerNorm(normalized_shape=2048),
+            nn.GELU(),
+            nn.Linear(2048, 512)
+        )
         
         self._freeze_modalities()
 
@@ -82,7 +94,10 @@ class CoMMEncoder(Encoder):
             else:
                 logger.info(f"Modality '{mod}' does not support weight loading via load_encoder_weights.")
         
-    def forward(self, x: dict, batch_positions=None):
+    def forward(self, x: dict | torch.Tensor, batch_positions=None, projection=False):
+        if projection:
+            return self.projector(x)
+
         features = {}
         temporal_reduced = {}
         

@@ -515,6 +515,8 @@ class SegMMUPerNet(SegUPerNet):
         single_modality_channels: list[int],
         pool_scales=(1, 2, 3, 6),
         feature_multiplier: int = 1,
+        segmentation: bool = True,
+        **kwargs
     ):
         super().__init__(
             encoder=encoder,
@@ -524,30 +526,44 @@ class SegMMUPerNet(SegUPerNet):
             pool_scales=pool_scales,
             feature_multiplier=feature_multiplier,
             in_channels=single_modality_channels,
+            **kwargs
         )
         
         self.model_name = "SegMMUPerNet"
+        self.segmentation = segmentation
+        
         self.mm_projectors = nn.ModuleList([
             nn.Conv2d(enc_ch, sm_ch, kernel_size=1)
-            for enc_ch, sm_ch in zip(self.encoder.output_dim, single_modality_channels)
+            for enc_ch, sm_ch in zip(self.encoder.topology, single_modality_channels)
         ])
+
+    def forward(self, img, batch_positions=None, **kwargs):
+        self._current_batch_positions = batch_positions
+        out = super().forward(img, batch_positions=batch_positions, **kwargs)
+        
+        if not getattr(self, 'segmentation', True) and out.dim() > 2:
+            out = torch.nn.functional.adaptive_avg_pool2d(out, (1, 1)).flatten(1)
+            
+        return out
         
     def forward_fmaps(self, img: dict[str, torch.Tensor]) -> torch.Tensor:
-        if self.encoder.multi_temporal:
+        batch_positions = getattr(self, '_current_batch_positions', None)
+        
+        if getattr(self.encoder, 'multi_temporal', False):
             if not self.finetune:
                 with torch.no_grad():
-                    feat = self.encoder(img)
+                    feat = self.encoder(img, batch_positions=batch_positions)
             else:
-                feat = self.encoder(img)
+                feat = self.encoder(img, batch_positions=batch_positions)
                 
-            if self.encoder.multi_temporal_output:
+            if getattr(self.encoder, 'multi_temporal_output', False):
                 feat = [f.squeeze(-3) for f in feat]
         else:
             if not self.finetune:
                 with torch.no_grad():
-                    feat = self.encoder({k: v[:, :, 0, :, :] if v.dim() == 5 else v for k, v in img.items()})
+                    feat = self.encoder({k: v[:, :, 0, :, :] if v.dim() == 5 else v for k, v in img.items()}, batch_positions=batch_positions)
             else:
-                feat = self.encoder({k: v[:, :, 0, :, :] if v.dim() == 5 else v for k, v in img.items()})
+                feat = self.encoder({k: v[:, :, 0, :, :] if v.dim() == 5 else v for k, v in img.items()}, batch_positions=batch_positions)
                 
         proj_feat = [proj(f) for proj, f in zip(self.mm_projectors, feat)]
         

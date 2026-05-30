@@ -565,33 +565,16 @@ class AnySatJEPALoss(nn.Module):
 
 
 class CoMMLoss(nn.Module):
-    def __init__(self, temperature=0.1, projection_dim=256):
+    def __init__(self, temperature=0.1):
         super().__init__()
         self.temperature = temperature
-        self.projection_dim = projection_dim
-        self.projector = None 
 
     def info_nce_loss(self, z1, z2):
-        # [B, D]
         z1 = F.normalize(z1, dim=1)
         z2 = F.normalize(z2, dim=1)
         logits = torch.matmul(z1, z2.T) / self.temperature
         labels = torch.arange(logits.size(0), device=logits.device)
         return F.cross_entropy(logits, labels)
-
-    def get_projection(self, model_output):
-        final_features = model_output[-1]
-        z = F.adaptive_avg_pool2d(final_features, (1, 1)).flatten(1)
-        
-        if self.projector is None:
-            in_features = z.shape[1]
-            self.projector = nn.Sequential(
-                nn.Linear(in_features, in_features),
-                nn.ReLU(inplace=True),
-                nn.Linear(in_features, self.projection_dim)
-            ).to(z.device)
-        
-        return self.projector(z)
 
     def augment(self, img_dict):
         import torchvision.transforms.v2 as transforms
@@ -603,17 +586,35 @@ class CoMMLoss(nn.Module):
             transforms.RandomHorizontalFlip(p=0.5),
         ])
         
-        seed = torch.randint(0, 2**32, (1,)).item()
-        augmented_dict = {}
-        for k, v in img_dict.items():
-            torch.manual_seed(seed)
+        keys = list(img_dict.keys())
+        tensors_2d = []
+        splits = []
+        
+        for k in keys:
+            v = img_dict[k]
             if v.dim() == 5:
                 B, C, T, H, W = v.shape
-                v_flat = v.permute(0, 2, 1, 3, 4).reshape(B*T, C, H, W)
-                v_aug = aug(v_flat)
-                augmented_dict[k] = v_aug.reshape(B, T, C, H, W).permute(0, 2, 1, 3, 4)
+                v_flat = v.reshape(B, C * T, H, W)
+                tensors_2d.append(v_flat)
+                splits.append(C * T)
             else:
-                augmented_dict[k] = aug(v)
+                tensors_2d.append(v)
+                splits.append(v.shape[1])
+                
+        concat_tensor = torch.cat(tensors_2d, dim=1)
+        aug_tensor = aug(concat_tensor)
+        split_tensors = torch.split(aug_tensor, splits, dim=1)
+        
+        augmented_dict = {}
+        for i, k in enumerate(keys):
+            v_split = split_tensors[i]
+            v_orig = img_dict[k]
+            if v_orig.dim() == 5:
+                B, C, T, H, W = v_orig.shape
+                augmented_dict[k] = v_split.reshape(B, C, T, H, W)
+            else:
+                augmented_dict[k] = v_split
+                
         return augmented_dict
         
     def forward(self, img_dict, model, batch_positions=None):
@@ -623,8 +624,8 @@ class CoMMLoss(nn.Module):
         out_prime = model(x_prime, batch_positions=batch_positions)
         out_double_prime = model(x_double_prime, batch_positions=batch_positions)
         
-        z_prime = self.get_projection(out_prime)
-        z_double_prime = self.get_projection(out_double_prime)
+        z_prime = model(out_prime[-1], projection=True)
+        z_double_prime = model(out_double_prime[-1], projection=True)
         
         loss_comm_main = self.info_nce_loss(z_prime, z_double_prime)
         
@@ -638,7 +639,7 @@ class CoMMLoss(nn.Module):
                     x_i[k] = torch.zeros_like(v)
             
             out_i = model(x_i, batch_positions=batch_positions)
-            z_i = self.get_projection(out_i)
+            z_i = model(out_i[-1], projection=True)
             
             loss_i = 0.5 * (self.info_nce_loss(z_i, z_prime) + self.info_nce_loss(z_i, z_double_prime))
             loss_i_sum += loss_i

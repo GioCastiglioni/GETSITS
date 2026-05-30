@@ -1,0 +1,333 @@
+task:
+  trainer:
+    _target_: getsits.engine.trainer.SegTrainer
+    model: null
+    train_loader: null
+    optimizer: null
+    lr_scheduler: null
+    evaluator: null
+    exp_dir: null
+    device: null
+    criterion: null
+    n_epochs: 105
+    precision: bfp16
+    ckpt_interval: 1000
+    eval_interval: 1
+    log_interval: 20
+    best_metric_key: mIoU
+    use_wandb: ${use_wandb}
+  evaluator:
+    _target_: getsits.engine.evaluator.SegEvaluator
+    distribution: ${dataset.distribution}
+    val_loader: null
+    exp_dir: null
+    device: null
+    use_wandb: ${use_wandb}
+dataset:
+  _target_: getsits.datasets.pastis.Pastis
+  dataset_name: Pastis
+  root_path: /home/gcastiglioni/workspace/datasets/PASTIS-HD
+  download_url: null
+  auto_download: false
+  img_size: 128
+  multi_temporal: 14
+  multi_modal: false
+  fold_config: 1
+  support_test: true
+  ignore_index: 19
+  num_classes: 20
+  classes:
+  - Background
+  - Meadow
+  - Soft Winter Wheat
+  - Corn
+  - Winter Barley
+  - Winter Rapeseed
+  - Spring Barley
+  - Sunflower
+  - Grapevine
+  - Beet
+  - Winter Triticale
+  - Winter Durum Wheat
+  - Fruits, Vegetables, Flowers
+  - Potatoes
+  - Leguminous Fodder
+  - Soybeans
+  - Orchard
+  - Mixed Cereal
+  - Sorghum
+  - Void Label
+  distribution:
+  - 0.399638
+  - 0.181859
+  - 0.066809
+  - 0.089887
+  - 0.019959
+  - 0.017545
+  - 0.006109
+  - 0.009343
+  - 0.029438
+  - 0.007811
+  - 0.007626
+  - 0.010959
+  - 0.009674
+  - 0.002906
+  - 0.015682
+  - 0.011744
+  - 0.01094
+  - 0.004813
+  - 0.003424
+  - 0.093834
+  bands:
+    optical:
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B11
+    - B12
+    sar:
+    - VV
+    - VH
+    - VV-VH
+  data_mean:
+    optical:
+    - 1161.6764
+    - 1371.4307
+    - 1423.4067
+    - 1759.7251
+    - 2714.5259
+    - 3055.8376
+    - 3197.896
+    - 3313.3577
+    - 2415.9675
+    - 1626.8431
+    sar:
+    - -10.9433
+    - -17.36
+    - 6.4167
+  data_std:
+    optical:
+    - 2045.0698
+    - 1983.1763
+    - 2060.7969
+    - 1968.8173
+    - 1867.2159
+    - 1885.1361
+    - 1897.5105
+    - 1885.1636
+    - 1542.7665
+    - 1375.2511
+    sar:
+    - 3.3847
+    - 3.3727
+    - 3.3874
+  data_min:
+    optical:
+    - -10000.0
+    - -10000.0
+    - -10000.0
+    - -10000.0
+    - -10000.0
+    - -10000.0
+    - -10000.0
+    - -10000.0
+    - -10000.0
+    - -10000.0
+    sar:
+    - -39.5312
+    - -43.125
+    - -20.6562
+  data_max:
+    optical:
+    - 22256.0
+    - 21891.0
+    - 22626.0
+    - 21814.0
+    - 20134.0
+    - 19282.0
+    - 18957.0
+    - 18482.0
+    - 16935.0
+    - 14668.0
+    sar:
+    - 34.875
+    - 27.3125
+    - 51.9062
+encoder:
+  encoders:
+    optical:
+      _target_: getsits.encoders.vit.VIT_Encoder
+      model_name: ViT-Small
+      encoder_weights: ./pretrained_models/vit_s_getsits.pth
+      download_url: null
+      embed_dim: 384
+      input_size: 224
+      patch_size: 16
+      depth: 12
+      num_heads: 6
+      mlp_ratio: 4
+      positional_encoding: geotime
+      input_bands:
+        optical:
+        - B1
+        - B2
+        - B3
+        - B4
+        - B5
+        - B6
+        - B7
+        - B8
+        - B8A
+        - B9
+        - B11
+        - B12
+      output_layers:
+      - 3
+      - 5
+      - 7
+      - 11
+      output_dim: 384
+    sar:
+      _target_: getsits.encoders.vit.VIT_Encoder
+      model_name: ViT-Small
+      encoder_weights: ./pretrained_models/vit_s_getsits.pth
+      download_url: null
+      embed_dim: 384
+      input_size: 224
+      patch_size: 16
+      depth: 12
+      num_heads: 6
+      mlp_ratio: 4
+      positional_encoding: geotime
+      input_bands:
+        optical:
+        - B1
+        - B2
+        - B3
+        - B4
+        - B5
+        - B6
+        - B7
+        - B8
+        - B8A
+        - B9
+        - B11
+        - B12
+        sar:
+        - VV
+        - VH
+      output_layers:
+      - 3
+      - 5
+      - 7
+      - 11
+      output_dim: 384
+  _target_: getsits.encoders.comm.CoMMEncoder
+  model_name: CoMM
+  input_size: 224
+  input_bands:
+    optical: ${encoder.encoders.optical.input_bands.optical}
+    sar: ${encoder.encoders.sar.input_bands.sar}
+  embed_dim: 256
+  output_layers:
+  - 1
+  - 2
+  - 3
+  - 4
+  output_dim:
+  - 768
+  - 768
+  - 768
+  - 512
+  multi_temporal: false
+  multi_temporal_output: false
+  pyramid_output: false
+  encoder_weights: ''
+  download_url: ''
+  num_heads: 8
+  depth: 1
+  modalities_finetune:
+    optical: true
+    sar: true
+  modalities_from_scratch:
+    optical: true
+    sar: true
+decoder:
+  _target_: getsits.decoders.upernet.SegMMUPerNet
+  num_classes: ${dataset.num_classes}
+  finetune: true
+  channels: 256
+  single_modality_channels:
+  - 384
+  - 384
+  - 384
+  - 384
+  segmentation: true
+preprocessing:
+  train:
+    _target_: getsits.engine.data_preprocessor.Preprocessor
+    preprocessor_cfg:
+    - _target_: getsits.engine.data_preprocessor.ResizeToEncoder
+    - _target_: getsits.engine.data_preprocessor.BandFilter
+    - _target_: getsits.engine.data_preprocessor.NormalizeMeanStd
+    - _target_: getsits.engine.data_preprocessor.BandPadding
+  val:
+    _target_: getsits.engine.data_preprocessor.Preprocessor
+    preprocessor_cfg:
+    - _target_: getsits.engine.data_preprocessor.ResizeToEncoder
+    - _target_: getsits.engine.data_preprocessor.BandFilter
+    - _target_: getsits.engine.data_preprocessor.NormalizeMeanStd
+    - _target_: getsits.engine.data_preprocessor.BandPadding
+  test:
+    _target_: getsits.engine.data_preprocessor.Preprocessor
+    preprocessor_cfg:
+    - _target_: getsits.engine.data_preprocessor.ResizeToEncoder
+    - _target_: getsits.engine.data_preprocessor.BandFilter
+    - _target_: getsits.engine.data_preprocessor.NormalizeMeanStd
+    - _target_: getsits.engine.data_preprocessor.BandPadding
+criterion:
+  _target_: torch.nn.CrossEntropyLoss
+  ignore_index: ${dataset.ignore_index}
+lr_scheduler:
+  _target_: getsits.utils.schedulers.CosineAnnealingLR
+  optimizer: null
+  total_iters: null
+  lr_milestones:
+  - 1.0
+  warmup_epochs: 5
+  n_epochs: ${task.trainer.n_epochs}
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 0.001
+  betas:
+  - 0.9
+  - 0.999
+  weight_decay: 0.0005
+train: true
+pretrain: false
+work_dir: /home/gcastiglioni/workspace/GETSITS/results_downstream
+seed: 242
+use_wandb: true
+wandb_run_id: 3nkbihbo
+wandb_project: CoMM-Downstream
+num_workers: 4
+batch_size: 4
+lars: false
+projection_dim: 128
+test_num_workers: 4
+test_batch_size: 4
+finetune: false
+from_scratch: false
+ckpt_dir: null
+limited_label_train: 1
+limited_label_val: 1
+limited_label_strategy: stratified
+stratification_bins: 3
+data_replicate: 1
+use_final_ckpt: false

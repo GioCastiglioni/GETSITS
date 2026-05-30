@@ -1,15 +1,15 @@
 train:
     _target_: getsits.engine.data_preprocessor.Preprocessor
     preprocessor_cfg:
+        - _target_: getsits.engine.data_preprocessor.ResizeNoTarget
         - _target_: getsits.engine.data_preprocessor.BandFilter
         - _target_: getsits.engine.data_preprocessor.BandPadding
         - _target_: getsits.engine.data_preprocessor.NormalizeMeanStd
-        - _target_: getsits.engine.data_preprocessor.ResizeNoTarget
 
 val:
     _target_: getsits.engine.data_preprocessor.Preprocessor
     preprocessor_cfg:
+        - _target_: getsits.engine.data_preprocessor.ResizeNoTarget
         - _target_: getsits.engine.data_preprocessor.BandFilter
         - _target_: getsits.engine.data_preprocessor.NormalizeMeanStd
         - _target_: getsits.engine.data_preprocessor.BandPadding
-        - _target_: getsits.engine.data_preprocessor.ResizeNoTarget
