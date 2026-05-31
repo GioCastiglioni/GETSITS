@@ -547,11 +547,22 @@ class SegMMUPerNet(SegUPerNet):
             if getattr(self.encoder, 'multi_temporal_output', False):
                 feat = [f.squeeze(-3) for f in feat]
         else:
+            bp_sliced = None
+            if batch_positions is not None:
+                bp_sliced = {}
+                for k, v in batch_positions.items():
+                    if isinstance(v, torch.Tensor) and v.dim() >= 2 and v.shape[1] > 1:
+                        bp_sliced[k] = v[:, 0:1] 
+                    else:
+                        bp_sliced[k] = v
+            
+            sliced_img = {k: v[:, :, 0, :, :] if v.dim() == 5 else v for k, v in img.items()}
+            
             if not self.finetune:
                 with torch.no_grad():
-                    feat = self.encoder({k: v[:, :, 0, :, :] if v.dim() == 5 else v for k, v in img.items()}, batch_positions=batch_positions)
+                    feat = self.encoder(sliced_img, batch_positions=bp_sliced)
             else:
-                feat = self.encoder({k: v[:, :, 0, :, :] if v.dim() == 5 else v for k, v in img.items()}, batch_positions=batch_positions)
+                feat = self.encoder(sliced_img, batch_positions=bp_sliced)
                 
         proj_feat = [proj(f) for proj, f in zip(self.mm_projectors, feat)]
         

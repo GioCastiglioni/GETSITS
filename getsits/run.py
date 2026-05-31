@@ -349,12 +349,19 @@ def main(cfg: DictConfig) -> None:
                     for p in decoder.module.encoder.parameters():
                         p.requires_grad = general_finetune
 
-            if hasattr(decoder.module.encoder, 'tmap'):
-                params.append({'params': filter(lambda p: p.requires_grad, decoder.module.encoder.tmap.parameters()), 'lr': cfg.optimizer.lr})
+            if hasattr(decoder.module, "encoder"):
+                tmap_params = [
+                    param for name, param in decoder.module.encoder.named_parameters() 
+                    if "tmap" in name and param.requires_grad
+                ]
+                if len(tmap_params) > 0:
+                    params.append({'params': tmap_params, 'lr': cfg.optimizer.lr})
 
             is_segmentation = cfg.decoder.get("segmentation", True)
             params.append({'params': params_extractor(decoder.module, encoder=False, projector=(not is_segmentation)), 'lr': cfg.optimizer.lr})
-            params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
+            
+            if general_finetune:
+                params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
 
         else:
             encoder_model = torch.nn.parallel.DistributedDataParallel(

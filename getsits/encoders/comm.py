@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from getsits.encoders.base import Encoder
 
 class CoMMEncoder(Encoder):
@@ -105,6 +106,40 @@ class CoMMEncoder(Encoder):
                     self.encoders[mod].load_encoder_weights(logger, from_scratch=mod_from_scratch)
                 else:
                     logger.info(f"Modality '{mod}' does not support weight loading via load_encoder_weights.")
+
+    def collapse_T(self, feature_maps, att):
+        n_heads = att.shape[0]
+        collapsed_maps = []
+
+        for fm in feature_maps:
+            if fm.dim() == 4:
+                collapsed_maps.append(fm)
+                continue
+
+            B, T, C, H_fm, W_fm = fm.shape
+            H_att, W_att = att.shape[-2], att.shape[-1]
+
+            if (H_fm, W_fm) != (H_att, W_att):
+                att_resized = att.view(-1, 1, H_att, W_att)
+                att_resized = F.interpolate(att_resized, size=(H_fm, W_fm), mode='bilinear', align_corners=False)
+                att_spatial = att_resized.view(n_heads, B, T, 1, H_fm, W_fm)
+            else:
+                att_spatial = att.unsqueeze(3) 
+
+            if C % n_heads == 0:
+                c_per_head = C // n_heads
+                fm_split = fm.view(B, T, n_heads, c_per_head, H_fm, W_fm)
+                fm_split = fm_split.permute(2, 0, 1, 3, 4, 5)
+                weighted = fm_split * att_spatial 
+                collapsed = weighted.sum(dim=2)
+                collapsed_fm = collapsed.permute(1, 0, 2, 3, 4).reshape(B, C, H_fm, W_fm)
+            else:
+                att_avg = att_spatial.mean(dim=0) 
+                collapsed_fm = (fm * att_avg).sum(dim=1)
+
+            collapsed_maps.append(collapsed_fm)
+
+        return collapsed_maps
         
     def forward(self, x: dict | torch.Tensor, batch_positions=None, projection=False):
         if projection:
@@ -122,7 +157,11 @@ class CoMMEncoder(Encoder):
                 
             if isinstance(out_tuple, tuple):
                 temporal_reduced[mod] = out_tuple[0]  
-                features[mod] = out_tuple[1]         
+                
+                if len(out_tuple) >= 4 and getattr(self, 'multi_temporal', False):
+                    features[mod] = self.collapse_T(out_tuple[1], out_tuple[3])
+                else:
+                    features[mod] = out_tuple[1]         
             else:
                 features[mod] = out_tuple
                 temporal_reduced[mod] = out_tuple[-1]
