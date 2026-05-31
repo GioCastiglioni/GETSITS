@@ -87,12 +87,24 @@ class CoMMEncoder(Encoder):
                     param.requires_grad = False
 
     def load_encoder_weights(self, logger, from_scratch=False):
-        for mod in self.modalities:
-            mod_from_scratch = self.modalities_from_scratch.get(mod, from_scratch)
-            if hasattr(self.encoders[mod], 'load_encoder_weights'):
-                self.encoders[mod].load_encoder_weights(logger, from_scratch=mod_from_scratch)
+        if not from_scratch:
+            if self.encoder_weights:
+                logger.info(f"Loading full pre-trained CoMMEncoder weights from {self.encoder_weights}...")
+                checkpoint = torch.load(self.encoder_weights, map_location="cpu", weights_only=False)
+                
+                state_dict = checkpoint.get("model", checkpoint.get("state_dict", checkpoint))
+                
+                self.load_state_dict(state_dict, strict=False)
+                logger.info("Pre-trained CoMMEncoder weights loaded successfully.")
             else:
-                logger.info(f"Modality '{mod}' does not support weight loading via load_encoder_weights.")
+                logger.warning("Global 'from_scratch' is False but 'encoder_weights' is missing.")
+        else:
+            for mod in self.modalities:
+                mod_from_scratch = self.modalities_from_scratch.get(mod, True)
+                if hasattr(self.encoders[mod], 'load_encoder_weights'):
+                    self.encoders[mod].load_encoder_weights(logger, from_scratch=mod_from_scratch)
+                else:
+                    logger.info(f"Modality '{mod}' does not support weight loading via load_encoder_weights.")
         
     def forward(self, x: dict | torch.Tensor, batch_positions=None, projection=False):
         if projection:

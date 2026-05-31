@@ -1,6 +1,6 @@
 _target_: getsits.decoders.upernet.SegMMUPerNet
 num_classes: ${dataset.num_classes}
-finetune: True
+finetune: ${finetune}
 channels: 256
 single_modality_channels: [384, 384, 384, 384] 
 segmentation: True

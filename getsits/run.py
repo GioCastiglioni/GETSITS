@@ -320,15 +320,42 @@ def main(cfg: DictConfig) -> None:
             criterion = instantiate(cfg.criterion)
             criterion = criterion.to(device)
 
-        params=[]
+        params = []
 
         if not cfg.pretrain:
+            general_finetune = cfg.get("finetune", cfg.decoder.get("finetune", False))
+
+            if hasattr(decoder.module, "encoder"):
+                if "CoMMEncoder" in str(type(decoder.module.encoder)):
+                    comm_enc = decoder.module.encoder
+                    
+                    if not general_finetune:
+                        for p in comm_enc.parameters():
+                            p.requires_grad = False
+                    else:
+                        for p in comm_enc.latent_converters.parameters():
+                            p.requires_grad = True
+                        for p in comm_enc.transformer.parameters():
+                            p.requires_grad = True
+                        if hasattr(comm_enc, "projector"):
+                            for p in comm_enc.projector.parameters():
+                                p.requires_grad = True
+                                
+                        for mod in comm_enc.modalities:
+                            mod_ft = cfg.encoder.get("modalities_finetune", {}).get(mod, False)
+                            for p in comm_enc.encoders[mod].parameters():
+                                p.requires_grad = mod_ft
+                else:
+                    for p in decoder.module.encoder.parameters():
+                        p.requires_grad = general_finetune
+
             if hasattr(decoder.module.encoder, 'tmap'):
                 params.append({'params': filter(lambda p: p.requires_grad, decoder.module.encoder.tmap.parameters()), 'lr': cfg.optimizer.lr})
 
-            params.append({'params': params_extractor(decoder.module, encoder=False, projector=(not cfg.decoder.segmentation)), 'lr': cfg.optimizer.lr})
-            if cfg.finetune:
-                params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
+            is_segmentation = cfg.decoder.get("segmentation", True)
+            params.append({'params': params_extractor(decoder.module, encoder=False, projector=(not is_segmentation)), 'lr': cfg.optimizer.lr})
+            params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
+
         else:
             encoder_model = torch.nn.parallel.DistributedDataParallel(
                         encoder.to(device),

@@ -305,23 +305,12 @@ class SegMTUPerNet(SegUPerNet):
         self.multi_temporal_strategy = multi_temporal_strategy
 
     def forward_features(
-        self, img: dict[str, torch.Tensor], batch_positions=None, output_shape: torch.Size | None = None
+        self, img: dict[str, torch.Tensor] | torch.Tensor, batch_positions=None, output_shape: torch.Size | None = None
     ) -> torch.Tensor:
-        """Compute the segmentation output for multi-temporal data.
 
-        Args:
-            img (dict[str, torch.Tensor]): input data structured as a dictionary:
-            img = {modality1: tensor1, modality2: tensor2, ...}, e.g. img = {"optical": tensor1, "sar": tensor2}.
-            with tensor1 and tensor2 of shape (B C T H W) with C the number of encoders'bands for the given modality,
-            and T the number of time steps.
-            output_shape (torch.Size | None, optional): output's spatial dims (H, W) (equals to the target spatial dims).
-            Defaults to None.
+        if not isinstance(img, dict):
+            img = {'optical': img}
 
-        Returns:
-            torch.Tensor: output tensor of shape (B, num_classes, H', W') with (H' W') coressponding to the output_shape.
-        """
-
-        # If the encoder handles multi_temporal we feed it with the input
         if not self.finetune:
             with torch.no_grad():
                 _, feat, _, att = self.encoder(img, batch_positions)
@@ -334,9 +323,8 @@ class SegMTUPerNet(SegUPerNet):
         feat = self._forward_feature(feat)
 
         if output_shape is None:
-            output_shape = img.shape[-2:]
+            output_shape = img[list(img.keys())[0]].shape[-2:]
 
-        # interpolate to the target spatial dims
         feat = F.interpolate(feat, size=output_shape, mode="bilinear")
 
         return feat
