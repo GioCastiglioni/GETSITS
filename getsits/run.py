@@ -332,6 +332,33 @@ def main(cfg: DictConfig) -> None:
         else: 
             criterion = instantiate(cfg.criterion)
             criterion = criterion.to(device)
+            
+            if str(criterion) == "BalancedContrastiveLearning":
+                in_channels_dynamic = decoder.module.conv_seg.weight.shape[1]
+                
+                prot_mlp = BCLProj(
+                    in_channels=in_channels_dynamic,
+                    hidden_d=criterion.hidden_d,
+                    out_d=criterion.out_d
+                )
+                criterion.prot_mlp = torch.nn.parallel.DistributedDataParallel(
+                    prot_mlp.to(device),
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    find_unused_parameters=True,
+                )
+                
+                views_mlp = BCLProj(
+                    in_channels=in_channels_dynamic,
+                    hidden_d=criterion.hidden_d,
+                    out_d=criterion.out_d
+                )
+                criterion.views_mlp = torch.nn.parallel.DistributedDataParallel(
+                    views_mlp.to(device),
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    find_unused_parameters=True,
+                )
 
         params=[]
 
@@ -340,6 +367,11 @@ def main(cfg: DictConfig) -> None:
                 params.append({'params': decoder.module.encoder.tmap.parameters(), 'lr': cfg.optimizer.lr})
 
             params.append({'params': params_extractor(decoder.module, encoder=False, projector=(not cfg.decoder.segmentation)), 'lr': cfg.optimizer.lr})
+            
+            if str(criterion) == "BalancedContrastiveLearning":
+                params.append({'params': criterion.prot_mlp.parameters(), 'lr': cfg.optimizer.lr})
+                params.append({'params': criterion.views_mlp.parameters(), 'lr': cfg.optimizer.lr})
+
             if cfg.finetune:
                 params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
         else:

@@ -154,13 +154,35 @@ class Trainer:
             self.training_stats["data_time"].update(time.time() - end_time)
 
             with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
-                logits = self.model(image, batch_positions=data["metadata"])
-                if hasattr(self.model.module, 'segmentation') and not self.model.module.segmentation:
-                    loss = self.compute_loss(logits, target.float())
+                if str(self.criterion) != "BalancedContrastiveLearning":
+                    logits = self.model(image, batch_positions=data["metadata"])
+                    if hasattr(self.model.module, 'segmentation') and not self.model.module.segmentation:
+                        loss = self.compute_loss(logits, target.float())
+                    else:
+                        valid_pixels = (target != self.criterion.ignore_index)
+                        if valid_pixels.any(): loss = self.compute_loss(logits, target)
+                        else: loss = logits.sum() * 0.0
                 else:
-                    valid_pixels = (target != self.criterion.ignore_index)
-                    if valid_pixels.any(): loss = self.compute_loss(logits, target)
-                    else: loss = logits.sum() * 0.0
+                    logits = self.model(image, batch_positions=data["metadata"])
+
+                    with torch.no_grad():
+                        image2, target2 = self.temporal_transform(image, target)
+                        image3, target3 = self.temporal_transform(image, target)
+
+                    prototypes = self.model.module.conv_seg.weight
+
+                    z2 = self.model.module.forward_features(image2.requires_grad_(True), batch_positions=data["metadata"])
+                    z3 = self.model.module.forward_features(image3.requires_grad_(True), batch_positions=data["metadata"])
+
+                    loss = self.criterion(
+                        logits,
+                        z2,
+                        z3,
+                        target,
+                        target2,
+                        target3,
+                        prototypes
+                    )
                 
             self.optimizer.zero_grad()
 

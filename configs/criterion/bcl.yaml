@@ -1,0 +1,10 @@
+_target_: getsits.utils.losses.BalancedContrastiveLearning
+num_classes: ${dataset.num_classes}
+distribution: ${dataset.distribution}
+ignore_index: ${dataset.ignore_index}
+lamb: 1.0
+mu: 0.3
+temperature: 1.0
+in_channels: 64
+hidden_d: 512
+out_d: 128
