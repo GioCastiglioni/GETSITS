@@ -127,7 +127,7 @@ def main(cfg: DictConfig) -> None:
                 name=exp_name,
                 config=wandb_cfg,
                 tags=[
-                    "ft" if cfg.finetune else "no-ft",
+                    "ft" if cfg.get("finetune", False) else "no-ft",
                     ],
             )
             cfg["wandb_run_id"] = wandb.run.id
@@ -149,7 +149,7 @@ def main(cfg: DictConfig) -> None:
                 name=exp_name,
                 config=wandb_cfg,
                 tags=[
-                    "ft" if cfg.finetune else "no-ft",
+                    "ft" if cfg.get("finetune", False) else "no-ft",
                     ],
             )
 
@@ -174,6 +174,43 @@ def main(cfg: DictConfig) -> None:
         )
     decoder = torch.nn.SyncBatchNorm.convert_sync_batchnorm(decoder)
     decoder.to(device)
+
+    if train_run and not cfg.pretrain:
+        if "finetune" in cfg:
+            general_finetune = str(cfg.finetune).lower() == 'true'
+        elif "decoder" in cfg and "finetune" in cfg.decoder:
+            general_finetune = str(cfg.decoder.finetune).lower() == 'true'
+        else:
+            general_finetune = False
+        
+        if hasattr(decoder, "finetune"):
+            decoder.finetune = general_finetune
+
+        if hasattr(decoder, "encoder"):
+            if "CoMMEncoder" in str(type(decoder.encoder)):
+                comm_enc = decoder.encoder
+                
+                if not general_finetune:
+                    for p in comm_enc.parameters():
+                        p.requires_grad = False
+                else:
+                    for p in comm_enc.latent_converters.parameters():
+                        p.requires_grad = True
+                    for p in comm_enc.transformer.parameters():
+                        p.requires_grad = True
+                    if hasattr(comm_enc, "projector"):
+                        for p in comm_enc.projector.parameters():
+                            p.requires_grad = True
+                            
+                    for mod in comm_enc.modalities:
+                        mod_ft_raw = cfg.encoder.get("modalities_finetune", {}).get(mod, general_finetune)
+                        mod_ft = str(mod_ft_raw).lower() == 'true' if isinstance(mod_ft_raw, (str, bool)) else False
+                        
+                        for p in comm_enc.encoders[mod].parameters():
+                            p.requires_grad = mod_ft
+            else:
+                for p in decoder.encoder.parameters():
+                    p.requires_grad = general_finetune
 
     logger.info(
             "Built {} for {} encoder.".format(
@@ -298,12 +335,20 @@ def main(cfg: DictConfig) -> None:
             collate_fn=collate_fn,
         )
         
-        decoder = torch.nn.parallel.DistributedDataParallel(
-                decoder,
-                device_ids=[local_rank],
-                output_device=local_rank,
-                find_unused_parameters=True,
-            )
+        if not cfg.pretrain:
+            decoder = torch.nn.parallel.DistributedDataParallel(
+                    decoder,
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    find_unused_parameters=True,
+                )
+        else:
+            encoder_model = torch.nn.parallel.DistributedDataParallel(
+                    encoder.to(device),
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    find_unused_parameters=True,
+                )
 
         if "AnySatJEPALoss" in cfg.criterion._target_:
             criterion = instantiate(
@@ -323,32 +368,7 @@ def main(cfg: DictConfig) -> None:
         params = []
 
         if not cfg.pretrain:
-            general_finetune = cfg.get("finetune", cfg.decoder.get("finetune", False))
-
-            if hasattr(decoder.module, "encoder"):
-                if "CoMMEncoder" in str(type(decoder.module.encoder)):
-                    comm_enc = decoder.module.encoder
-                    
-                    if not general_finetune:
-                        for p in comm_enc.parameters():
-                            p.requires_grad = False
-                    else:
-                        for p in comm_enc.latent_converters.parameters():
-                            p.requires_grad = True
-                        for p in comm_enc.transformer.parameters():
-                            p.requires_grad = True
-                        if hasattr(comm_enc, "projector"):
-                            for p in comm_enc.projector.parameters():
-                                p.requires_grad = True
-                                
-                        for mod in comm_enc.modalities:
-                            mod_ft = cfg.encoder.get("modalities_finetune", {}).get(mod, False)
-                            for p in comm_enc.encoders[mod].parameters():
-                                p.requires_grad = mod_ft
-                else:
-                    for p in decoder.module.encoder.parameters():
-                        p.requires_grad = general_finetune
-
+            # Extracción explícita de los TMAP omitidos por params_extractor
             if hasattr(decoder.module, "encoder"):
                 tmap_params = [
                     param for name, param in decoder.module.encoder.named_parameters() 
@@ -360,17 +380,9 @@ def main(cfg: DictConfig) -> None:
             is_segmentation = cfg.decoder.get("segmentation", True)
             params.append({'params': params_extractor(decoder.module, encoder=False, projector=(not is_segmentation)), 'lr': cfg.optimizer.lr})
             
-            if general_finetune:
-                params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
+            params.append({'params': params_extractor(decoder.module, encoder=True, projector=cfg.pretrain), 'lr': cfg.optimizer.lr})
 
         else:
-            encoder_model = torch.nn.parallel.DistributedDataParallel(
-                        encoder.to(device),
-                        device_ids=[local_rank],
-                        output_device=local_rank,
-                        find_unused_parameters=True,
-                    )
-
             params.append({'params': filter(lambda p: p.requires_grad, encoder_model.module.parameters()), 'lr': cfg.optimizer.lr})
             if "AnySatJEPALoss" in cfg.criterion._target_:
                 params.append({'params': filter(lambda p: p.requires_grad, criterion.module.predictor.parameters()), 'lr': cfg.optimizer.lr})

@@ -519,6 +519,7 @@ class SegMMUPerNet(SegUPerNet):
         
         self.model_name = "SegMMUPerNet"
         self.segmentation = segmentation
+        self.finetune = finetune 
         
         self.mm_projectors = nn.ModuleList([
             nn.Conv2d(enc_ch, sm_ch, kernel_size=1)
@@ -537,8 +538,15 @@ class SegMMUPerNet(SegUPerNet):
     def forward_fmaps(self, img: dict[str, torch.Tensor]) -> torch.Tensor:
         batch_positions = getattr(self, '_current_batch_positions', None)
         
-        if getattr(self.encoder, 'multi_temporal', False):
-            if not self.finetune:
+        # [B, C, T, H, W]
+        is_temporal = False
+        for v in img.values():
+            if v.dim() == 5 and v.shape[2] > 1:
+                is_temporal = True
+                break
+                
+        if is_temporal:
+            if not getattr(self, 'finetune', True):
                 with torch.no_grad():
                     feat = self.encoder(img, batch_positions=batch_positions)
             else:
@@ -558,7 +566,7 @@ class SegMMUPerNet(SegUPerNet):
             
             sliced_img = {k: v[:, :, 0, :, :] if v.dim() == 5 else v for k, v in img.items()}
             
-            if not self.finetune:
+            if not getattr(self, 'finetune', True):
                 with torch.no_grad():
                     feat = self.encoder(sliced_img, batch_positions=bp_sliced)
             else:
