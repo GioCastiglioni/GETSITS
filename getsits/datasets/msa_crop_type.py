@@ -1,10 +1,10 @@
 import numpy as np
 import torch
 import os
-from pathlib import Path
 from getsits.datasets.base import RawGeoFMDataset
-from getsits.datasets.utils import decompress_zip_with_progress
+from pathlib import Path
 from huggingface_hub import HfApi, hf_hub_download
+from getsits.datasets.utils import decompress_zip_with_progress
 import subprocess
 import sys
 try:
@@ -15,14 +15,14 @@ except ImportError:
     import geobench
 
 
-class mCashewPlant(RawGeoFMDataset):
+class mSACropType(RawGeoFMDataset):
     def __init__(
         self,
         split: str,
         dataset_name: str,
         multi_modal: bool,
         multi_temporal: int,
-        support_test: bool,       # Agregado para GETSITS
+        support_test: bool,
         root_path: str,
         classes: list,
         num_classes: int,
@@ -36,17 +36,14 @@ class mCashewPlant(RawGeoFMDataset):
         data_max: dict[str, list[str]],
         download_url: str,
         auto_download: bool,
-        fold_config: int          # Agregado para GETSITS
+        fold_config: int
     ):
-        """Initialize the m-Cashew-Plantation dataset.
-            Link: https://github.com/ServiceNow/geo-bench
-        """
-        super(mCashewPlant, self).__init__(
+        super(mSACropType, self).__init__(
             split=split,
             dataset_name=dataset_name,
             multi_modal=multi_modal,
             multi_temporal=multi_temporal,
-            support_test=support_test,  # Agregado para GETSITS
+            support_test=support_test,
             root_path=root_path,
             classes=classes,
             num_classes=num_classes,
@@ -60,7 +57,7 @@ class mCashewPlant(RawGeoFMDataset):
             data_max=data_max,
             download_url=download_url,
             auto_download=auto_download,
-            fold_config=fold_config     # Agregado para GETSITS
+            fold_config=fold_config
         )
 
         self.data_mean = data_mean
@@ -88,8 +85,6 @@ class mCashewPlant(RawGeoFMDataset):
 
     def __getitem__(self, index):
         sample = self.dataset[index]
-        # for band in sample.bands:
-        #    print(f"  {band.band_info.name}: {band.data.shape}")
         all_band_names = (
             "01",
             "02",
@@ -104,16 +99,13 @@ class mCashewPlant(RawGeoFMDataset):
             "11",
             "12",
         )
-
         rgb_bands = ("04", "03", "02")
-
         BAND_SETS = {"all": all_band_names, "rgb": rgb_bands}
         image, band_names = sample.pack_to_3d(band_names=BAND_SETS["all"])
         label = sample.label.data
         filename = sample.sample_name
         
         image = torch.from_numpy(image.transpose(2, 0, 1)).float() 
-        
         image=image.unsqueeze(1)
 
         return {
@@ -140,12 +132,10 @@ class mCashewPlant(RawGeoFMDataset):
         dataset_files = api.list_repo_files(repo_id=dataset_repo, repo_type="dataset")
 
         for file in dataset_files:
-
-            if file not in ['segmentation_v1.0/m-cashew-plant.zip', 'segmentation_v1.0/normalizer.json']:
+            if file not in ['segmentation_v1.0/m-SA-crop-type.zip', 'segmentation_v1.0/normalizer.json']:
                 continue
 
             local_file_path = local_directory / file
-
             local_file_path.parent.mkdir(parents=True, exist_ok=True)
 
             print(f"Downloading {file}...")

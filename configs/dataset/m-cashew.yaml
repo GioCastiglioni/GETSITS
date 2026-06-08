@@ -1,98 +1,56 @@
-_target_: getsits.datasets.mcashewplant.CashewCrops
-dataset_name: CashewCrops
-root_path: ./datasets/m-cashew-plant
-download_url: null
-auto_download: false
+_target_: getsits.datasets.mcashewplant.mCashewPlant
+dataset_name: mCashew-Plant
+root_path: ${oc.env:GEO_BENCH_DIR}/segmentation_v1.0/m-cashew-plant
+download_url: "recursix/geo-bench-1.0"
+auto_download: True
+
 img_size: 256
 multi_temporal: 1
-multi_modal: false
-fold_config: null
-support_test: true
-ignore_index: 0
+multi_modal: False
+support_test: True
+fold_config: 1
+
+# classes
+ignore_index: 255
 num_classes: 7
-classes:
-- "Unknown"
-- "Well-managed planatation"
-- "Poorly-managed planatation"
-- "Non-plantation"
-- "Residential"
-- "Background"
-- "Uncertain"
+classes: 
+  - 'no data'
+  - 'well-managed plantation'
+  - 'poorly-managed plantation'
+  - 'non-plantation'
+  - 'residential'
+  - 'background'
+  - 'uncertain'
 distribution:
-- 0.044042
-- 0.133198
-- 0.278138
-- 0.121752
-- 0.031928
-- 0.384105
-- 0.006837
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+
+
 bands:
   optical:
-  - B1
-  - B2
-  - B3
-  - B4
-  - B5
-  - B6
-  - B7
-  - B8
-  - B8A
-  - B9
-  - B11
-  - B12
+    - B1
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B9
+    - B11
+    - B12
+    
 data_mean:
-  optical:
-  - 516.9318
-  - 631.0321
-  - 889.0483
-  - 875.1507
-  - 1376.5814
-  - 2233.2992
-  - 2548.479
-  - 2642.0247
-  - 2642.0247
-  - 2851.839
-  - 2459.0645
-  - 1596.3358
+  optical: [520.1185302734375, 634.7583618164062, 892.461181640625, 880.7075805664062, 1380.0, 2038.904296875, 2309.281005859375, 2275.567138671875, 2529.62353515625, 2550.0, 1941.8016357421875, 1269.8370361328125]
 data_std:
-  optical:
-  - 203.3885
-  - 227.1115
-  - 222.023
-  - 350.9411
-  - 281.363
-  - 375.1722
-  - 451.2521
-  - 415.8947
-  - 415.8947
-  - 415.7974
-  - 497.4878
-  - 516.2254
+  optical: [136.00294494628906, 172.937744140625, 219.01918029785156, 303.49755859375, 276.0, 483.5042419433594, 608.20361328125, 597.5501098632812, 631.9546508789062, 584.0, 529.244384765625, 451.98382568359375]
 data_min:
-  optical:
-  - 104.0
-  - 1.0
-  - 310.0
-  - 206.0
-  - 445.0
-  - 392.0
-  - 396.0
-  - 419.0
-  - 419.0
-  - 1107.0
-  - 259.0
-  - 167.0
+  optical: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 data_max:
-  optical:
-  - 4145.0
-  - 6764.0
-  - 7520.0
-  - 8960.0
-  - 5406.0
-  - 5456.0
-  - 5567.0
-  - 9337.0
-  - 9337.0
-  - 5761.0
-  - 5819.0
-  - 15200.0
+  optical: [255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]

@@ -6,6 +6,21 @@ import concurrent.futures
 from google.cloud.storage import Client
 
 
+def decompress_zip_with_progress(zip_file_path, extract_to_folder=None):
+    """Decompress a zip file with a progress bar and remove the symlink."""
+    if extract_to_folder is None:
+        extract_to_folder = zip_file_path.parent
+
+    with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
+        file_names = zip_ref.namelist()
+        total_files = len(file_names)
+
+        with tqdm(total=total_files, unit="file", desc=f"Extracting {zip_file_path.name}") as pbar:
+            for file in file_names:
+                zip_ref.extract(file, extract_to_folder)
+                pbar.update(1)
+
+    zip_file_path.unlink()
 
 # Utility progress bar handler for urlretrieve
 class DownloadProgressBar:
