@@ -662,7 +662,9 @@ class BalancedContrastiveLearning(nn.Module):
             temperature=0.1,
             in_channels=64,
             hidden_d=512,
-            out_d=128
+            out_d=128,
+            max_anchors=4096,
+            max_context=32768,
         ):
         super(BalancedContrastiveLearning, self).__init__()
         self.num_classes = num_classes
@@ -679,8 +681,8 @@ class BalancedContrastiveLearning(nn.Module):
         self.BCL = BCLSegmentationLoss(
             self.num_classes, 
             tau=self.temperature,
-            max_anchors=4096, 
-            max_context=32768,
+            max_anchors=max_anchors, 
+            max_context=max_context,
             ignore_index=self.ignore_index
         )
 

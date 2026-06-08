@@ -136,6 +136,8 @@ class SegEvaluator(Evaluator):
             (self.num_classes, self.num_classes), device=self.device
         )
         total_loss = 0
+        all_local_cms = [] 
+
         for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
             data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
             image, target = data["image"], data["target"]
@@ -147,7 +149,8 @@ class SegEvaluator(Evaluator):
             if str(self.criterion) == "BalancedContrastiveLearning":
                 loss_tensor = self.criterion.LC(logits, target)
             else:
-                loss_tensor = self.criterion(logits, target)                
+                loss_tensor = self.criterion(logits, target)
+
             torch.distributed.all_reduce(loss_tensor, op=torch.distributed.ReduceOp.SUM)
             total_loss += loss_tensor.item()
 
@@ -157,13 +160,21 @@ class SegEvaluator(Evaluator):
                 else:
                     pred = torch.argmax(logits, dim=1)
 
-                valid_mask = target != self.ignore_index
-                pred, target = pred[valid_mask], target[valid_mask]
-
-                count = torch.bincount(
-                    (pred * self.num_classes + target), minlength=self.num_classes ** 2
-                )
-                confusion_matrix += count.view(self.num_classes, self.num_classes)
+                for b in range(target.shape[0]):
+                    p_b = pred[b]
+                    t_b = target[b]
+                    valid_mask_b = t_b != self.ignore_index
+                    p_b_valid, t_b_valid = p_b[valid_mask_b], t_b[valid_mask_b]
+                    
+                    count_b = torch.bincount(
+                        (p_b_valid * self.num_classes + t_b_valid), minlength=self.num_classes ** 2
+                    ).view(self.num_classes, self.num_classes)
+                    
+                    confusion_matrix += count_b
+                    
+                    if self.split == 'test':
+                        all_local_cms.append(count_b.cpu())
+                
                 self.is_multilabel = False
             else:
                 probs = torch.sigmoid(logits)
@@ -180,7 +191,6 @@ class SegEvaluator(Evaluator):
 
                 self.is_multilabel = True
             
-            
             torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
             
         torch.distributed.all_reduce(
@@ -188,11 +198,21 @@ class SegEvaluator(Evaluator):
         )
         
         metrics = self.compute_metrics(confusion_matrix.cpu())
-
         metrics["loss"] = total_loss / (self._get_dist_info()[1] * (batch_idx+1))
+
+        if self.split == 'test' and hasattr(self, 'is_multilabel') and not self.is_multilabel:
+            local_cms_tensor = torch.stack(all_local_cms).to(self.device)
+            rank, world_size = self._get_dist_info()
+            if world_size > 1:
+                gathered_cms = [torch.zeros_like(local_cms_tensor) for _ in range(world_size)]
+                torch.distributed.all_gather(gathered_cms, local_cms_tensor)
+                all_cms_tensor = torch.cat(gathered_cms, dim=0)
+            else:
+                all_cms_tensor = local_cms_tensor
+                
+            metrics["per_sample_cms"] = all_cms_tensor.cpu().numpy()
         
         self.log_metrics(metrics)
-
         used_time = time.time() - t
 
         return metrics, used_time

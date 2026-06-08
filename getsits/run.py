@@ -473,6 +473,42 @@ def main(cfg: DictConfig) -> None:
             model_ckpt_path = get_best_model_ckpt_path(exp_dir) if not cfg.use_final_ckpt else get_final_model_ckpt_path(exp_dir)
             metrics, _ = test_evaluator.evaluate(decoder, "test_model", model_ckpt_path)
 
+            if "per_sample_cms" in metrics and rank == 0:
+                from confidence_intervals import evaluate_with_conf_int
+                import numpy as np
+
+                cm_samples = metrics.pop("per_sample_cms")
+                ignore_idx = test_evaluator.ignore_index
+
+                # Métrica envolvente: Recibe N matrices de confusión muestreadas, calcula la suma y devuelve el mIoU
+                def miou_bootstrap_metric(samples):
+                    cm = np.sum(samples, axis=0)
+                    if ignore_idx != -1:
+                        keep = np.arange(cm.shape[0]) != ignore_idx
+                        cm = cm[keep][:, keep]
+                    intersection = np.diag(cm)
+                    union = cm.sum(axis=1) + cm.sum(axis=0) - intersection
+                    iou = (intersection / (union + 1e-6)) * 100
+                    return np.mean(iou)
+
+                # Ejecutar Bootstrapping (1000 repeticiones, CI al 95%)
+                logger.info("Computing 95% Confidence Intervals for mIoU via Bootstrapping...")
+                center, (low, high) = evaluate_with_conf_int(
+                    samples=cm_samples, 
+                    metric=miou_bootstrap_metric, 
+                    num_bootstraps=1000, 
+                    alpha=5
+                )
+
+                metrics["mIoU_CI_low"] = low
+                metrics["mIoU_CI_high"] = high
+                
+                logger.info(
+                    f"\n============================================\n"
+                    f"Test mIoU w/ 95% CI: {center:.3f} [{low:.3f} - {high:.3f}]\n"
+                    f"============================================"
+                )
+
             logger.info(
                 f"Best_mIoU: {metrics['mIoU']}\n"
                 f"Best_mF1: {metrics['mF1']}\n"
@@ -480,13 +516,16 @@ def main(cfg: DictConfig) -> None:
             )
 
             if cfg.use_wandb and rank == 0:
-                wandb.log(
-                    {
-                        "Best_mIoU": metrics["mIoU"],
-                        "Best_mF1": metrics["mF1"],
-                        "Best_mAcc": metrics["mAcc"]
-                    }
-                )
+                wandb_log_dict = {
+                    "Best_mIoU": metrics["mIoU"],
+                    "Best_mF1": metrics["mF1"],
+                    "Best_mAcc": metrics["mAcc"]
+                }
+                if "mIoU_CI_low" in metrics:
+                    wandb_log_dict["Best_mIoU_CI_low"] = metrics["mIoU_CI_low"]
+                    wandb_log_dict["Best_mIoU_CI_high"] = metrics["mIoU_CI_high"]
+                    
+                wandb.log(wandb_log_dict)
 
         else:
             model_dict = torch.load(get_best_model_ckpt_path(exp_dir), map_location=device, weights_only=False)
