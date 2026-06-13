@@ -154,6 +154,7 @@ class SegUPerNetGraph(Decoder):
         feature_multiplier: int = 1,
         in_channels: list[int] | None = None,
         use_gnn_lateral: bool = True,
+        k_semantic: int = 1,
     ):
         super().__init__(
             encoder=encoder,
@@ -232,7 +233,7 @@ class SegUPerNetGraph(Decoder):
                 l_conv = GraphAttention(
                     in_channels=in_channels,
                     out_channels=self.channels,
-                    k_semantic=8 # 8 neighbors + self
+                    k_semantic=k_semantic # 8 neighbors + self
                 )
             else:
                 l_conv = nn.Sequential(
@@ -398,7 +399,8 @@ class SegMTUPerNetGraph(SegUPerNetGraph):
         segmentation: bool = True,
         pool_scales: list[int] = [1, 2, 3, 6],
         feature_multiplier: int = 1,
-        use_gnn_lateral: bool = True
+        use_gnn_lateral: bool = True,
+        k_semantic: int = 1,
     ) -> None:
         super().__init__(
             encoder=encoder,
@@ -408,7 +410,8 @@ class SegMTUPerNetGraph(SegUPerNetGraph):
             pool_scales=pool_scales,
             feature_multiplier=feature_multiplier,
             in_channels=encoder.topology,
-            use_gnn_lateral=use_gnn_lateral
+            use_gnn_lateral=use_gnn_lateral,
+            k_semantic=k_semantic
         )
         self.segmentation = segmentation
         if not self.segmentation:

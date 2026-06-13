@@ -9,5 +9,6 @@ finetune: ${finetune}
 # to adapt
 channels: 512
 multi_temporal_strategy: ltae
+k_semantic: 8
 
 segmentation: true

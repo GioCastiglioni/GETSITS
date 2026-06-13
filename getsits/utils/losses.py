@@ -657,6 +657,8 @@ class BalancedContrastiveLearning(nn.Module):
             num_classes,
             distribution,
             ignore_index=-1,
+            focal=False,
+            gamma=2.0,
             lamb=2.0,
             mu=0.6,
             temperature=0.1,
@@ -677,7 +679,7 @@ class BalancedContrastiveLearning(nn.Module):
         self.hidden_d = hidden_d
         self.out_d = out_d
 
-        self.LC = torch.nn.CrossEntropyLoss(ignore_index=self.ignore_index)
+        self.LC = torch.nn.CrossEntropyLoss(ignore_index=self.ignore_index) if not focal else FocalLossSoftMax(gamma=gamma, ignore_index=self.ignore_index)
         self.BCL = BCLSegmentationLoss(
             self.num_classes, 
             tau=self.temperature,
@@ -700,3 +702,39 @@ class BalancedContrastiveLearning(nn.Module):
     
     def __str__(self):
         return 'BalancedContrastiveLearning'
+
+
+class FocalLossSoftMax(nn.Module):
+    def __init__(
+        self,
+        gamma: float = 2.0,
+        ignore_index: int = -1,
+    ):
+        super(FocalLossSoftMax, self).__init__()
+        self.gamma = gamma
+        self.ignore_index = ignore_index
+
+    def forward(self, input: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # input: [B, C, H, W]
+        # targets: [B, H, W]
+        
+        log_p = F.log_softmax(input, dim=1)
+        ce_loss = F.nll_loss(log_p, targets, reduction='none', ignore_index=self.ignore_index)
+        
+        with torch.no_grad():
+            p = torch.exp(log_p)
+            # targets: [B, H, W] -> [B, 1, H, W]
+            gathered_p = torch.gather(p, dim=1, index=targets.unsqueeze(1).clamp(min=0))
+            gathered_p = gathered_p.squeeze(1)
+        
+        focal_weight = (1.0 - gathered_p) ** self.gamma
+        loss = focal_weight * ce_loss
+        
+        if self.ignore_index >= 0:
+            mask = targets != self.ignore_index
+            return loss[mask].mean()
+        
+        return loss.mean()
+    
+    def __str__(self):
+        return 'FocalLoss'
