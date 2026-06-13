@@ -232,7 +232,7 @@ def get_subset_indices(dataset: GeoFMDataset,
         )
         return indices
     
-    elif task == "segmentation" or task == "change_detection" or task == "pretraining":
+    elif task in ["segmentation", "change_detection", "pretraining", "downstream"]:
         indices, _ = balance_seg_indices(
             dataset, strategy=strategy, label_fraction=label_fraction, num_bins=num_bins, logger=logger
         )
@@ -240,6 +240,8 @@ def get_subset_indices(dataset: GeoFMDataset,
         indices, _ = balance_reg_indices(
             dataset, strategy=strategy, label_fraction=label_fraction, num_bins=num_bins, logger=logger
         )
+    else:
+        raise ValueError(f"Task '{task}' is not recognized for subset sampling.")
     
     return indices
 
