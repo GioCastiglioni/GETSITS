@@ -9,6 +9,9 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import numpy as np
+from PIL import Image
+
 
 class Evaluator:
     """
@@ -176,6 +179,8 @@ class SegEvaluator(Evaluator):
                         all_local_cms.append(count_b.cpu())
                 
                 self.is_multilabel = False
+                if self.split == 'test':
+                    self.save_visualizations(image["v1"], target, pred, batch_idx, max_samples=2)
             else:
                 probs = torch.sigmoid(logits)
                 preds = (probs > 0.5).float()
@@ -220,6 +225,95 @@ class SegEvaluator(Evaluator):
     @torch.no_grad()
     def __call__(self, model, model_name, model_ckpt_path=None):
         return self.evaluate(model, model_name, model_ckpt_path)
+
+    def save_visualizations(self, image_tensor, target_tensor, pred_tensor, batch_idx, max_samples=2):
+        vis_dir = Path(f"/home/gcastiglioni/workspace/datasets/visualizations_full/{self.dataset_name}")
+        vis_dir.mkdir(parents=True, exist_ok=True)
+
+        if not hasattr(self, 'palette'):
+            np.random.seed(42)
+            self.palette = np.random.randint(0, 255, size=(self.num_classes + 1, 3), dtype=np.uint8)
+            self.palette[-1] = [0, 0, 0]
+
+        B = image_tensor.shape[0]
+        samples_to_save = min(B, max_samples)
+
+        # 1. Definir la configuración estricta del encoder y obtener las del dataset
+        encoder_bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12']
+        dataset_bands = self.val_loader.dataset.bands['optical']
+        
+        # 2. Simular la lógica de BandFilter de tu data_preprocessor.py
+        present_bands = [b for b in encoder_bands if b in dataset_bands]
+
+        for b in range(samples_to_save):
+            img = image_tensor[b].cpu().float().numpy()
+            
+            # Quitar la dimensión temporal de GETSITS: (C, T, H, W) -> (C, H, W)
+            if img.ndim == 4:
+                img = img[:, 0, :, :]
+            
+            # 3. Determinar qué bandas activas tiene el tensor actual
+            if img.shape[0] == len(encoder_bands):
+                # Se aplicó BandPadding, todas las bandas del encoder están presentes
+                active_bands = encoder_bands
+            else:
+                # Solo se aplicó BandFilter, el tensor tiene la longitud de la intersección
+                active_bands = present_bands
+
+            # 4. Extraer los índices exactos de RGB dinámicamente
+            try:
+                r_idx = active_bands.index('B4')
+                g_idx = active_bands.index('B3')
+                b_idx = active_bands.index('B2')
+                img = img[[r_idx, g_idx, b_idx], :, :]
+            except ValueError:
+                # Fallback de seguridad si el dataset no es óptico (ej. SAR)
+                img = img[:3, :, :]
+            
+            # Convertir a formato de imagen (H, W, C)
+            img = np.transpose(img, (1, 2, 0))
+            
+            # 5. Normalización robusta para imágenes satelitales (Z-scores a RGB)
+            img_min = np.percentile(img, 2, axis=(0, 1), keepdims=True)
+            img_max = np.percentile(img, 98, axis=(0, 1), keepdims=True)
+            
+            img = (img - img_min) / (img_max - img_min + 1e-8)
+            img = np.clip(img, 0, 1)
+            
+            # Corrección Gamma (0.8) para revivir los colores y eliminar neblina atmosférica
+            img = img ** 0.8
+            
+            img_rgb = (img * 255).astype(np.uint8)
+
+            tgt = target_tensor[b].cpu().numpy()
+            prd = pred_tensor[b].cpu().numpy()
+
+            # Mapear píxeles ignorados al final de la paleta
+            valid_tgt = np.where((tgt == self.ignore_index) | (tgt < 0) | (tgt >= self.num_classes), self.num_classes, tgt)
+            valid_prd = np.where((prd == self.ignore_index) | (prd < 0) | (prd >= self.num_classes), self.num_classes, prd)
+
+            tgt_color = self.palette[valid_tgt]
+            prd_color = self.palette[valid_prd]
+
+            # --- NUEVA LÓGICA DE TRANSPARENCIA DINÁMICA ---
+            # Nivel de opacidad para las clases válidas (ej. 50% transparente)
+            alpha_base = 0.5 
+            
+            # Creamos una matriz de alpha donde:
+            # - Si el índice es 0 (Background) o num_classes (Ignore), alpha = 1.0 (Solo se ve la imagen original)
+            # - Si es cualquier otra clase objetivo, alpha = 0.5 (Se mezcla la imagen con el color)
+            tgt_alpha = np.where((valid_tgt == 0) | (valid_tgt == self.num_classes), 1.0, alpha_base)[..., np.newaxis]
+            prd_alpha = np.where((valid_prd == 0) | (valid_prd == self.num_classes), 1.0, alpha_base)[..., np.newaxis]
+
+            # Aplicamos la combinación lineal (Alpha Blending Píxel a Píxel)
+            prd_overlay = (img_rgb * prd_alpha + prd_color * (1 - prd_alpha)).astype(np.uint8)
+            tgt_overlay = (img_rgb * tgt_alpha + tgt_color * (1 - tgt_alpha)).astype(np.uint8)
+            # ----------------------------------------------
+
+            combined_img = np.concatenate((prd_overlay, tgt_overlay), axis=1)
+
+            filename = vis_dir / f"batch_{batch_idx:03d}_sample_{b}.png"
+            Image.fromarray(combined_img).save(filename)
 
     def compute_metrics(self, confusion_matrix):
         if hasattr(self, 'is_multilabel') and self.is_multilabel:
