@@ -227,7 +227,7 @@ class SegEvaluator(Evaluator):
         return self.evaluate(model, model_name, model_ckpt_path)
 
     def save_visualizations(self, image_tensor, target_tensor, pred_tensor, batch_idx, max_samples=2):
-        vis_dir = Path(f"~/workspace/datasets/visualizations/{self.exp_dir}")
+        vis_dir = Path(f"{self.exp_dir}/visualizations")
         vis_dir.mkdir(parents=True, exist_ok=True)
 
         if not hasattr(self, 'palette'):
