@@ -3,6 +3,8 @@ import os
 import time
 from pathlib import Path
 import wandb
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
 import torch
 import torch.nn.functional as F
@@ -180,7 +182,7 @@ class SegEvaluator(Evaluator):
                 
                 self.is_multilabel = False
                 if self.split == 'test':
-                    self.save_visualizations(image["v1"], target, pred, batch_idx, max_samples=2)
+                    self.save_visualizations(image["v1"], target, pred, batch_idx, max_samples=1)
             else:
                 probs = torch.sigmoid(logits)
                 preds = (probs > 0.5).float()
@@ -238,49 +240,38 @@ class SegEvaluator(Evaluator):
         B = image_tensor.shape[0]
         samples_to_save = min(B, max_samples)
 
-        # 1. Definir la configuración estricta del encoder y obtener las del dataset
         encoder_bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12']
         dataset_bands = self.val_loader.dataset.bands['optical']
         
-        # 2. Simular la lógica de BandFilter de tu data_preprocessor.py
         present_bands = [b for b in encoder_bands if b in dataset_bands]
 
         for b in range(samples_to_save):
             img = image_tensor[b].cpu().float().numpy()
             
-            # Quitar la dimensión temporal de GETSITS: (C, T, H, W) -> (C, H, W)
             if img.ndim == 4:
-                img = img[:, 0, :, :]
+                img = img[:, torch.randint(img.shape[1], (1,)).item(), :, :]
             
-            # 3. Determinar qué bandas activas tiene el tensor actual
             if img.shape[0] == len(encoder_bands):
-                # Se aplicó BandPadding, todas las bandas del encoder están presentes
                 active_bands = encoder_bands
             else:
-                # Solo se aplicó BandFilter, el tensor tiene la longitud de la intersección
                 active_bands = present_bands
 
-            # 4. Extraer los índices exactos de RGB dinámicamente
             try:
                 r_idx = active_bands.index('B4')
                 g_idx = active_bands.index('B3')
                 b_idx = active_bands.index('B2')
                 img = img[[r_idx, g_idx, b_idx], :, :]
             except ValueError:
-                # Fallback de seguridad si el dataset no es óptico (ej. SAR)
                 img = img[:3, :, :]
             
-            # Convertir a formato de imagen (H, W, C)
             img = np.transpose(img, (1, 2, 0))
             
-            # 5. Normalización robusta para imágenes satelitales (Z-scores a RGB)
             img_min = np.percentile(img, 2, axis=(0, 1), keepdims=True)
             img_max = np.percentile(img, 98, axis=(0, 1), keepdims=True)
             
             img = (img - img_min) / (img_max - img_min + 1e-8)
             img = np.clip(img, 0, 1)
             
-            # Corrección Gamma (0.8) para revivir los colores y eliminar neblina atmosférica
             img = img ** 0.8
             
             img_rgb = (img * 255).astype(np.uint8)
@@ -288,32 +279,77 @@ class SegEvaluator(Evaluator):
             tgt = target_tensor[b].cpu().numpy()
             prd = pred_tensor[b].cpu().numpy()
 
-            # Mapear píxeles ignorados al final de la paleta
             valid_tgt = np.where((tgt == self.ignore_index) | (tgt < 0) | (tgt >= self.num_classes), self.num_classes, tgt)
             valid_prd = np.where((prd == self.ignore_index) | (prd < 0) | (prd >= self.num_classes), self.num_classes, prd)
 
             tgt_color = self.palette[valid_tgt]
             prd_color = self.palette[valid_prd]
 
-            # --- NUEVA LÓGICA DE TRANSPARENCIA DINÁMICA ---
-            # Nivel de opacidad para las clases válidas (ej. 50% transparente)
             alpha_base = 0.5 
             
-            # Creamos una matriz de alpha donde:
-            # - Si el índice es 0 (Background) o num_classes (Ignore), alpha = 1.0 (Solo se ve la imagen original)
-            # - Si es cualquier otra clase objetivo, alpha = 0.5 (Se mezcla la imagen con el color)
             tgt_alpha = np.where((valid_tgt == 0) | (valid_tgt == self.num_classes), 1.0, alpha_base)[..., np.newaxis]
             prd_alpha = np.where((valid_prd == 0) | (valid_prd == self.num_classes), 1.0, alpha_base)[..., np.newaxis]
 
-            # Aplicamos la combinación lineal (Alpha Blending Píxel a Píxel)
             prd_overlay = (img_rgb * prd_alpha + prd_color * (1 - prd_alpha)).astype(np.uint8)
             tgt_overlay = (img_rgb * tgt_alpha + tgt_color * (1 - tgt_alpha)).astype(np.uint8)
-            # ----------------------------------------------
 
             combined_img = np.concatenate((prd_overlay, tgt_overlay), axis=1)
 
+            unique_classes = np.unique(np.concatenate((valid_tgt, valid_prd)))
+            unique_classes = [int(c) for c in unique_classes]
+
+            if 0 in unique_classes:
+                unique_classes.remove(0)
+
+            h, w, _ = combined_img.shape
+            dpi = 100
+            
+            max_allowed_cols = max(1, w // 150)
+            num_cols = min(max_allowed_cols, len(unique_classes)) if len(unique_classes) > 0 else 1
+            
+            num_rows = (len(unique_classes) + num_cols - 1) // num_cols if len(unique_classes) > 0 else 0
+            
+            legend_h = 20 + (num_rows * 20) if len(unique_classes) > 0 else 0
+            total_h = h + legend_h
+            
+            fig = plt.figure(figsize=(w / dpi, total_h / dpi), dpi=dpi)
+            
+            ax_img = fig.add_axes([0, legend_h / total_h, 1.0, h / total_h])
+            ax_img.imshow(combined_img)
+            ax_img.axis('off')
+
+            if len(unique_classes) > 0:
+                legend_elements = []
+                for cls_idx in unique_classes:
+                    if cls_idx == self.num_classes:
+                        cls_name = "Ignore/Background"
+                    else:
+                        try:
+                            cls_name = self.classes[cls_idx]
+                        except IndexError:
+                            cls_name = f"Class {cls_idx}"
+
+                    max_chars = 25
+                    if len(cls_name) > max_chars:
+                        cls_name = cls_name[:max_chars - 3] + "..."
+
+                    color = self.palette[cls_idx] / 255.0
+                    legend_elements.append(
+                        mpatches.Patch(facecolor=color, edgecolor='gray', label=cls_name)
+                    )
+
+                # Render the legend
+                fig.legend(handles=legend_elements,
+                           loc='center',
+                           bbox_to_anchor=(0.5, (legend_h / 2) / total_h), 
+                           ncol=num_cols,
+                           frameon=False,
+                           fontsize=8,
+                           columnspacing=1.0) 
+
             filename = vis_dir / f"batch_{batch_idx:03d}_sample_{b}.png"
-            Image.fromarray(combined_img).save(filename)
+            plt.savefig(filename, dpi=dpi)
+            plt.close(fig)
 
     def compute_metrics(self, confusion_matrix):
         if hasattr(self, 'is_multilabel') and self.is_multilabel:
@@ -352,6 +388,36 @@ class SegEvaluator(Evaluator):
             return metrics
 
         else:
+            cm_base = confusion_matrix.clone()
+            
+            cm_od = cm_base.clone()
+            cm_od[:, 0] = 0 
+            
+            if self.ignore_index != -1:
+                keep_od = torch.arange(cm_od.size(0)) != self.ignore_index
+                cm_od = cm_od[keep_od][:, keep_od]
+            
+            intersection_od = torch.diag(cm_od)
+            union_od = cm_od.sum(dim=1) + cm_od.sum(dim=0) - intersection_od
+            iou_od = (intersection_od / (union_od + 1e-6)) * 100
+
+            precision_od = intersection_od / (cm_od.sum(dim=0) + 1e-6) * 100
+            recall_od = intersection_od / (cm_od.sum(dim=1) + 1e-6) * 100
+            f1_od = 2 * (precision_od * recall_od) / (precision_od + recall_od + 1e-6)
+
+            od_valid = torch.ones(cm_od.size(0), dtype=torch.bool)
+            kept_indices = torch.arange(cm_base.size(0))
+            if self.ignore_index != -1:
+                kept_indices = kept_indices[keep_od]
+            
+            class_0_idx = (kept_indices == 0).nonzero(as_tuple=True)[0]
+            if len(class_0_idx) > 0:
+                od_valid[class_0_idx[0]] = False
+
+            miou_od = iou_od[od_valid].mean().item() if od_valid.any() else 0.0
+            mf1_od = f1_od[od_valid].mean().item() if od_valid.any() else 0.0
+            macc_od = (intersection_od.sum() / (cm_od.sum() + 1e-6)).item() * 100
+
             if self.ignore_index != -1:
                 keep = torch.arange(confusion_matrix.size(0)) != self.ignore_index
                 confusion_matrix = confusion_matrix[keep][:, keep]
@@ -388,6 +454,9 @@ class SegEvaluator(Evaluator):
                 "mAcc": macc,
                 "Precision": [precision[i].item() for i in range(confusion_matrix.size(0))],
                 "Recall": [recall[i].item() for i in range(confusion_matrix.size(0))],
+                "mIoU_OD": miou_od,
+                "mF1_OD": mf1_od,
+                "mAcc_OD": macc_od,
             }
 
             return metrics
@@ -441,34 +510,43 @@ class SegEvaluator(Evaluator):
         self.logger.info(precision_str)
         self.logger.info(recall_str)
         self.logger.info(macc_str)
+        
+        if "mIoU_OD" in metrics:
+            od_str = f"Only Data (OD) Metrics -> mIoU: {metrics['mIoU_OD']:.3f} | mF1: {metrics['mF1_OD']:.3f} | mAcc: {metrics['mAcc_OD']:.3f}\n"
+            self.logger.info(od_str)
+
         self.logger.info(loss_str)
 
         if self.use_wandb and self.rank == 0:
-            wandb.log(
-                {
-                    f"{self.split}_mIoU": metrics["mIoU"],
-                    f"{self.split}_mF1": metrics["mF1"],
-                    f"{self.split}_mAcc": metrics["mAcc"],
-                    f"{self.split}_loss": metrics["loss"],
-                    **{
-                        f"{self.split}_IoU_{c}": v
-                        for c, v in zip(filtered_classes, iou)
-                    },
-                    **{
-                        f"{self.split}_F1_{c}": v
-                        for c, v in zip(filtered_classes, f1)
-                    },
-                    **{
-                        f"{self.split}_Precision_{c}": v
-                        for c, v in zip(filtered_classes, precision)
-                    },
-                    **{
-                        f"{self.split}_Recall_{c}": v
-                        for c, v in zip(filtered_classes, recall)
-                    },
-                }
-            )
+            wandb_log_dict = {
+                f"{self.split}_mIoU": metrics["mIoU"],
+                f"{self.split}_mF1": metrics["mF1"],
+                f"{self.split}_mAcc": metrics["mAcc"],
+                f"{self.split}_loss": metrics["loss"],
+                **{
+                    f"{self.split}_IoU_{c}": v
+                    for c, v in zip(filtered_classes, iou)
+                },
+                **{
+                    f"{self.split}_F1_{c}": v
+                    for c, v in zip(filtered_classes, f1)
+                },
+                **{
+                    f"{self.split}_Precision_{c}": v
+                    for c, v in zip(filtered_classes, precision)
+                },
+                **{
+                    f"{self.split}_Recall_{c}": v
+                    for c, v in zip(filtered_classes, recall)
+                },
+            }
+            
+            if "mIoU_OD" in metrics:
+                wandb_log_dict[f"{self.split}_mIoU_OD"] = metrics["mIoU_OD"]
+                wandb_log_dict[f"{self.split}_mF1_OD"] = metrics["mF1_OD"]
+                wandb_log_dict[f"{self.split}_mAcc_OD"] = metrics["mAcc_OD"]
 
+            wandb.log(wandb_log_dict)
     def _get_dist_info(self):
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             rank = torch.distributed.get_rank()
