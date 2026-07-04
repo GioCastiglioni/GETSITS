@@ -1,0 +1,4 @@
+_target_: getsits.utils.losses.AsymmetricLoss
+gamma_neg: 4.0
+gamma_pos: 1.0
+clip: 0.05

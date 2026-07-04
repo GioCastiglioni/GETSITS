@@ -738,3 +738,47 @@ class FocalLossSoftMax(nn.Module):
     
     def __str__(self):
         return 'FocalLoss'
+
+
+class AsymmetricLoss(nn.Module):
+    def __init__(self, gamma_neg=4.0, gamma_pos=1.0, clip=0.05, eps=1e-8):
+        """
+        Args:
+            gamma_neg (float): Focusing parameter for negative samples.
+            gamma_pos (float): Focusing parameter for positive samples.
+            clip (float): Probability margin for hard clipping of easy negatives.
+            eps (float): Small value to avoid log(0).
+        """
+        super(AsymmetricLoss, self).__init__()
+        self.gamma_neg = gamma_neg
+        self.gamma_pos = gamma_pos
+        self.clip = clip
+        self.eps = eps
+
+    def forward(self, x, y):
+        """
+        Args:
+            x (torch.Tensor): Logits of shape (B, C).
+            y (torch.Tensor): Binary targets of shape (B, C).
+        """
+        # Calculate probabilities
+        x_sigmoid = torch.sigmoid(x)
+        xs_pos = x_sigmoid
+        xs_neg = 1.0 - x_sigmoid
+
+        # Asymmetric Clipping
+        if self.clip > 0:
+            xs_neg = (xs_neg + self.clip).clamp(max=1)
+
+        # Log probability clamping
+        los_pos = y * torch.log(xs_pos.clamp(min=self.eps))
+        los_neg = (1 - y) * torch.log(xs_neg.clamp(min=self.eps))
+
+        # Asymmetric Focusing
+        loss_pos = los_pos * (1 - xs_pos) ** self.gamma_pos
+        loss_neg = los_neg * (xs_neg) ** self.gamma_neg
+
+        loss = -(loss_pos + loss_neg)
+        
+        # Mean across classes and batch
+        return loss.mean()
