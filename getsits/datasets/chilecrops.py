@@ -46,7 +46,7 @@ class CropChileDataset(RawGeoFMDataset):
         download_url: str,
         auto_download: bool,
         fold_config: int,
-        label_type: str = "fine",  # "fine" (84 clases) o "macro" (32 clases)
+        label_type: str = "macro",
         reference_date: str = "2016-01-01",
     ):
         super(CropChileDataset, self).__init__(
