@@ -1,4 +1,5 @@
-_target_: getsits.utils.losses.AsymmetricLoss
+_target_: getsits.utils.losses.AsymmetricLossOptimized 
 gamma_neg: 4.0
 gamma_pos: 1.0
 clip: 0.05
+disable_torch_grad_focal_loss: True
