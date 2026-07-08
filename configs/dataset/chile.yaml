@@ -1,0 +1,169 @@
+_target_: getsits.datasets.chilecrops.CropChileDataset
+dataset_name: CropChile_macro
+root_path: ./datasets/chile
+download_url: null
+auto_download: false
+img_size: 128
+multi_temporal: 20
+multi_modal: true
+fold_config: 1
+support_test: false
+ignore_index: -1
+num_classes: 32
+label_type: macro
+classes:
+- no_crop
+- almond
+- apples
+- avocado
+- beans
+- blueberry
+- brassicaceae_cruciferae
+- cherry_cherries
+- grain_maize_corn_popcorn
+- hazelnuts_hazel
+- kiwi
+- lemons
+- mandarin
+- melon
+- nectarine
+- olive_plantations
+- onions
+- orange
+- others
+- others_alliums
+- others_arable_crops
+- others_berries_berry_species
+- others_cucurbits
+- others_orchards_fruits
+- peach
+- pears
+- plums
+- potatoes
+- pumpkin_squash_gourd
+- tomato
+- vineyards_wine_vine_rebland_grapes
+- walnuts
+distribution:
+- 0.852397
+- 0.002832
+- 0.009829
+- 0.012334
+- 0.00091
+- 0.005019
+- 0.000734
+- 0.025469
+- 0.001839
+- 0.011896
+- 0.002365
+- 0.003758
+- 0.005301
+- 0.00087
+- 0.003022
+- 0.006654
+- 0.001738
+- 0.003189
+- 0.000677
+- 0.000826
+- 0.002252
+- 0.001222
+- 0.000885
+- 0.000817
+- 0.002377
+- 0.00178
+- 0.006313
+- 0.001474
+- 0.001737
+- 0.003602
+- 0.011777
+- 0.014105
+bands:
+  optical:
+    - B1
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B9
+    - B11
+    - B12
+  sar:
+    - elevation
+    - landform
+    - mTPI
+data_mean:
+  optical:
+    - 2764.0717
+    - 2791.1427
+    - 2941.1101
+    - 3034.5599
+    - 3391.628
+    - 4042.5278
+    - 4300.9667
+    - 4470.1053
+    - 4476.2828
+    - 4744.6081
+    - 3606.7835
+    - 2964.6081
+  sar:
+    - 310.7756
+    - 30.3195
+    - -7.049
+data_std:
+  optical:
+    - 2913.2515
+    - 2714.6562
+    - 2493.5123
+    - 2422.4968
+    - 2350.4175
+    - 2066.6952
+    - 1998.9919
+    - 2051.7202
+    - 1883.1442
+    - 2521.4657
+    - 1225.5891
+    - 1096.1294
+  sar:
+    - 240.3686
+    - 6.0224
+    - 24.031
+data_min:
+  optical:
+    - 1.0
+    - 1.0
+    - 1.0
+    - 329.0
+    - 389.0
+    - 359.0
+    - 410.0
+    - 364.0
+    - 637.0
+    - 705.0
+    - 984.0
+    - 992.0
+  sar:
+    - -12.0
+    - 0.0
+    - -242.0
+data_max:
+  optical:
+    - 27357.0
+    - 25312.0
+    - 26064.0
+    - 23280.0
+    - 19955.0
+    - 19348.0
+    - 18983.0
+    - 20257.0
+    - 18374.0
+    - 18184.0
+    - 16464.0
+    - 16452.0
+  sar:
+    - 2247.0
+    - 42.0
+    - 233.0
