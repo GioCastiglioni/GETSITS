@@ -194,11 +194,32 @@ class Trainer:
 
             else:
                 anysat_flag = (str(self.criterion) == "AnySatJEPA")
-                if str(self.criterion) == "CoMMLoss":
-                    img_dict = {k: v.to(self.device) for k, v in data["image"].items()}
-                    img_dict = self.temporal_transform(img_dict)
-                    with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
-                        loss = self.criterion(img_dict, self.model, batch_positions=data["metadata"])
+                if str(self.criterion) == "UnifiedCoMMLoss":
+                    # 1. Llevar el diccionario de imágenes al dispositivo
+                    image_dict = {k: v.to(self.device) for k, v in data["image"].items()}
+                    
+                    # 2. Llevar metadata al dispositivo (doy, etc.)
+                    metadata = None
+                    if "metadata" in data and data["metadata"] is not None:
+                        metadata = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in data["metadata"].items()}
+
+                    # 3. Generar las vistas fuertemente aumentadas (Z' y Z'')
+                    # temporal_transform maneja la consistencia espacio-temporal y multimodal automáticamente
+                    aug1_img_dict = self.temporal_transform(image_dict)
+                    aug2_img_dict = self.temporal_transform(image_dict)
+                    
+                    # 4. Calcular la pérdida CoMM Unificada
+                    # Pasamos las imágenes limpias (para prototipos unimodales puros Z_1, Z_2)
+                    # Y las imágenes aumentadas (para los prototipos de fusión Z', Z'')
+                    outputs = self.criterion(
+                        self.model,
+                        orig_img_dict=image_dict, 
+                        aug1_img_dict=aug1_img_dict, 
+                        aug2_img_dict=aug2_img_dict, 
+                        batch_positions=metadata
+                    )
+                    
+                    loss = outputs["loss"]
                 else:
                     img = self.temporal_transform(data["image"]["optical"].to(self.device))
                     with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
@@ -309,6 +330,71 @@ class Trainer:
                         "val_loss": final_val_loss,
                         "val_inv": final_inv,
                         "val_sigreg": final_sigreg,
+                        "epoch": epoch
+                    },
+                    step = epoch * len(self.train_loader)
+                )
+                
+            return final_val_loss
+        elif str(self.criterion) == "UnifiedCoMMLoss":
+
+            total_epoch_loss = 0.0
+            total_fusion = 0.0
+            total_z1_align = 0.0
+            total_z2_align = 0.0
+            
+            end_time = time.time()
+            for batch_idx, data in enumerate(tqdm(self.val_loader, desc=f"Evaluating Epoch {epoch}", disable=self.rank != 0)):
+
+                image_dict = {k: v.to(self.device) for k, v in data["image"].items()}
+                metadata = None
+                if "metadata" in data and data["metadata"] is not None:
+                    metadata = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in data["metadata"].items()}
+
+                self.training_stats["data_time"].update(time.time() - end_time)
+
+                with torch.autocast(
+                    "cuda", enabled=self.enable_mixed_precision, dtype=self.precision
+                ):
+                    aug1_img_dict = self.temporal_transform(image_dict)
+                    aug2_img_dict = self.temporal_transform(image_dict)
+                    
+                    outputs = self.criterion(
+                        self.model,
+                        orig_img_dict=image_dict, 
+                        aug1_img_dict=aug1_img_dict, 
+                        aug2_img_dict=aug2_img_dict, 
+                        batch_positions=metadata
+                    )
+                    
+                total_epoch_loss += outputs["loss"].item()
+                total_fusion += outputs["loss_fusion"].item()
+                total_z1_align += outputs["loss_z1_align"].item()
+                total_z2_align += outputs["loss_z2_align"].item()
+                
+                torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
+                end_time = time.time()
+
+            final_val_loss = total_epoch_loss / len(self.val_loader)
+            final_fusion = total_fusion / len(self.val_loader)
+            final_z1_align = total_z1_align / len(self.val_loader)
+            final_z2_align = total_z2_align / len(self.val_loader)
+
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                metrics_tensor = torch.tensor([final_val_loss, final_fusion, final_z1_align, final_z2_align], device=self.device)
+                torch.distributed.all_reduce(metrics_tensor, op=torch.distributed.ReduceOp.AVG)
+                final_val_loss = metrics_tensor[0].item()
+                final_fusion = metrics_tensor[1].item()
+                final_z1_align = metrics_tensor[2].item()
+                final_z2_align = metrics_tensor[3].item()
+
+            if self.use_wandb and self.rank == 0:
+                self.wandb.log(
+                    {
+                        "val_loss": final_val_loss,
+                        "val_fusion_loss": final_fusion,
+                        "val_z1_align": final_z1_align,
+                        "val_z2_align": final_z2_align,
                         "epoch": epoch
                     },
                     step = epoch * len(self.train_loader)

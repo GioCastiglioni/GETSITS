@@ -1,0 +1,2 @@
+_target_: getsits.utils.losses.UnifiedCoMMLoss
+temperature: 0.1

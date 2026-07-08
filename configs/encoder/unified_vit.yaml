@@ -1,0 +1,41 @@
+_target_: getsits.encoders.unified_vit.UnifiedMMViT
+model_name: unified_vit
+embed_dim: 384
+patch_size: 16
+depth: 12
+num_heads: 6
+input_size: 224
+multi_temporal: True
+multi_temporal_output: False
+pyramid_output: False
+projection_dim: 256
+positional_encoding: "geotime"
+modalities_finetune:
+  optical: True
+  sar: True
+input_bands:
+  optical:
+    - B1
+    - B2
+    - B3
+    - B4
+    - B5
+    - B6
+    - B7
+    - B8
+    - B8A
+    - B9
+    - B10
+    - B11
+    - B12
+  sar:
+    - VV
+    - VH
+
+output_layers:
+  - 3
+  - 5
+  - 7
+  - 11
+
+output_dim: 384

@@ -649,3 +649,70 @@ class CoMMLoss(nn.Module):
         
     def __str__(self):
         return "CoMMLoss"
+    
+
+class UnifiedCoMMLoss(nn.Module):
+    def __init__(self, temperature=0.1):
+        super().__init__()
+        self.temperature = temperature
+        self.INF = 1e8
+
+    def infonce(self, z1, z2):
+        N = len(z1)
+        z1 = F.normalize(z1, p=2, dim=-1)
+        z2 = F.normalize(z2, p=2, dim=-1)
+        
+        sim_zii = (z1 @ z1.T) / self.temperature 
+        sim_zjj = (z2 @ z2.T) / self.temperature 
+        sim_zij = (z1 @ z2.T) / self.temperature 
+        
+        sim_zii = sim_zii - self.INF * torch.eye(N, device=z1.device)
+        sim_zjj = sim_zjj - self.INF * torch.eye(N, device=z1.device)
+        
+        sim_Z = torch.cat([
+            torch.cat([sim_zij, sim_zii], dim=1),
+            torch.cat([sim_zjj, sim_zij.T], dim=1)], dim=0)
+            
+        log_sim_Z = F.log_softmax(sim_Z, dim=1)
+        loss = - torch.diag(log_sim_Z).mean()
+        return loss
+
+    def forward(self, model, orig_img_dict, aug1_img_dict, aug2_img_dict, batch_positions=None):
+        """
+        Orquesta la estrategia oficial de CoMM:
+        Z_1: Unimodal 1 (Alpha 1.0, Sin Aumentación)
+        Z_2: Unimodal 2 (Alpha 0.0, Sin Aumentación)
+        Z': Multimodal Fuerte (Alpha 0.5, Aumentación 1)
+        Z'': Multimodal Fuerte (Alpha 0.5, Aumentación 2)
+        """
+        # Prototipos Puros Unimodales (Z_1 y Z_2)
+        z_1 = model(orig_img_dict, batch_positions=batch_positions, force_alpha=1.0, return_projected=True)
+        z_2 = model(orig_img_dict, batch_positions=batch_positions, force_alpha=0.0, return_projected=True)
+        
+        # Prototipos Multimodales Fuertes (Z' y Z'')
+        z_prime = model(aug1_img_dict, batch_positions=batch_positions, force_alpha=0.5, return_projected=True)
+        z_dprime = model(aug2_img_dict, batch_positions=batch_positions, force_alpha=0.5, return_projected=True)
+
+        # 1. Alineación de los Prototipos Multimodales entre sí
+        loss_z_z = (self.infonce(z_prime, z_dprime) + self.infonce(z_dprime, z_prime)) / 2.0
+        
+        # 2. Alineación Unimodal contra el Prototipo Z'
+        loss_z1_zprime = (self.infonce(z_1, z_prime) + self.infonce(z_prime, z_1)) / 2.0
+        loss_z2_zprime = (self.infonce(z_2, z_prime) + self.infonce(z_prime, z_2)) / 2.0
+        
+        # 3. Alineación Unimodal contra el Prototipo Z''
+        loss_z1_zdprime = (self.infonce(z_1, z_dprime) + self.infonce(z_dprime, z_1)) / 2.0
+        loss_z2_zdprime = (self.infonce(z_2, z_dprime) + self.infonce(z_dprime, z_2)) / 2.0
+
+        # Loss Total CoMM Oficial
+        total_loss = loss_z_z + loss_z1_zprime + loss_z2_zprime + loss_z1_zdprime + loss_z2_zdprime
+        
+        return {
+            "loss": total_loss, 
+            "loss_fusion": loss_z_z, 
+            "loss_z1_align": loss_z1_zprime + loss_z1_zdprime,
+            "loss_z2_align": loss_z2_zprime + loss_z2_zdprime
+        }
+
+    def __str__(self):
+        return "UnifiedCoMMLoss"
