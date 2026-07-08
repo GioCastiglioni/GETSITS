@@ -657,6 +657,17 @@ class UnifiedCoMMLoss(nn.Module):
         self.temperature = temperature
         self.INF = 1e8
 
+    def _concat_dicts(self, dicts):
+        out = {}
+        for k in dicts[0].keys():
+            if isinstance(dicts[0][k], torch.Tensor):
+                out[k] = torch.cat([d[k] for d in dicts], dim=0)
+            elif isinstance(dicts[0][k], dict):
+                out[k] = self._concat_dicts([d[k] for d in dicts])
+            else:
+                out[k] = dicts[0][k]
+        return out
+
     def infonce(self, z1, z2):
         N = len(z1)
         z1 = F.normalize(z1, p=2, dim=-1)
@@ -678,33 +689,35 @@ class UnifiedCoMMLoss(nn.Module):
         return loss
 
     def forward(self, model, orig_img_dict, aug1_img_dict, aug2_img_dict, batch_positions=None):
-        """
-        Orquesta la estrategia oficial de CoMM:
-        Z_1: Unimodal 1 (Alpha 1.0, Sin Aumentación)
-        Z_2: Unimodal 2 (Alpha 0.0, Sin Aumentación)
-        Z': Multimodal Fuerte (Alpha 0.5, Aumentación 1)
-        Z'': Multimodal Fuerte (Alpha 0.5, Aumentación 2)
-        """
-        # Prototipos Puros Unimodales (Z_1 y Z_2)
-        z_1 = model(orig_img_dict, batch_positions=batch_positions, force_alpha=1.0, return_projected=True)
-        z_2 = model(orig_img_dict, batch_positions=batch_positions, force_alpha=0.0, return_projected=True)
-        
-        # Prototipos Multimodales Fuertes (Z' y Z'')
-        z_prime = model(aug1_img_dict, batch_positions=batch_positions, force_alpha=0.5, return_projected=True)
-        z_dprime = model(aug2_img_dict, batch_positions=batch_positions, force_alpha=0.5, return_projected=True)
+        first_k = list(orig_img_dict.keys())[0]
+        B = orig_img_dict[first_k].shape[0]
+        device = orig_img_dict[first_k].device
 
-        # 1. Alineación de los Prototipos Multimodales entre sí
+        merged_img_dict = self._concat_dicts([orig_img_dict, orig_img_dict, aug1_img_dict, aug2_img_dict])
+        
+        merged_bp = None
+        if batch_positions is not None:
+            merged_bp = self._concat_dicts([batch_positions, batch_positions, batch_positions, batch_positions])
+
+        force_alpha = torch.cat([
+            torch.full((B, 1, 1), 1.0, device=device),
+            torch.full((B, 1, 1), 0.0, device=device),
+            torch.full((B, 1, 1), 0.5, device=device),
+            torch.full((B, 1, 1), 0.5, device=device),
+        ], dim=0)
+
+        z_all = model(merged_img_dict, batch_positions=merged_bp, force_alpha=force_alpha, return_projected=True)
+
+        z_1, z_2, z_prime, z_dprime = torch.split(z_all, B, dim=0)
+
         loss_z_z = (self.infonce(z_prime, z_dprime) + self.infonce(z_dprime, z_prime)) / 2.0
         
-        # 2. Alineación Unimodal contra el Prototipo Z'
         loss_z1_zprime = (self.infonce(z_1, z_prime) + self.infonce(z_prime, z_1)) / 2.0
         loss_z2_zprime = (self.infonce(z_2, z_prime) + self.infonce(z_prime, z_2)) / 2.0
         
-        # 3. Alineación Unimodal contra el Prototipo Z''
         loss_z1_zdprime = (self.infonce(z_1, z_dprime) + self.infonce(z_dprime, z_1)) / 2.0
         loss_z2_zdprime = (self.infonce(z_2, z_dprime) + self.infonce(z_dprime, z_2)) / 2.0
 
-        # Loss Total CoMM Oficial
         total_loss = loss_z_z + loss_z1_zprime + loss_z2_zprime + loss_z1_zdprime + loss_z2_zdprime
         
         return {

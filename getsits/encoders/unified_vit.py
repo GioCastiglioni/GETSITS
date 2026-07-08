@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.vision_transformer import Block
+from torch.utils.checkpoint import checkpoint
 
 from getsits.encoders.base import Encoder
 from getsits.encoders.ltae import LTAE2d
@@ -38,18 +39,23 @@ class DenseConvStem(nn.Module):
         self.patching = nn.Conv2d(128, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out_i = self.conv_i(x)
-        out_ii = self.conv_ii(out_i)
-        
-        cat_1 = torch.cat([out_i, out_ii], dim=1)
-        out_skip1 = self.skip1(cat_1)
-        
-        out_iii = self.conv_iii(out_skip1)
-        
-        cat_2 = torch.cat([out_skip1, out_iii], dim=1)
-        out_skip2 = self.skip2(cat_2)
-        
-        return self.patching(out_skip2)
+        def _inner_forward(x_in):
+            out_i = self.conv_i(x_in)
+            out_ii = self.conv_ii(out_i)
+            
+            cat_1 = torch.cat([out_i, out_ii], dim=1)
+            out_skip1 = self.skip1(cat_1)
+            
+            out_iii = self.conv_iii(out_skip1)
+            
+            cat_2 = torch.cat([out_skip1, out_iii], dim=1)
+            out_skip2 = self.skip2(cat_2)
+            
+            return self.patching(out_skip2)
+            
+        if self.training:
+            return checkpoint(_inner_forward, x, use_reentrant=False)
+        return _inner_forward(x)
 
 
 class UnifiedMMViT(Encoder):
@@ -162,10 +168,15 @@ class UnifiedMMViT(Encoder):
 
     def forward(self, x: dict, batch_positions=None, force_alpha=None, return_projected=False):
         processed_tokens = {}
-        doy = batch_positions["doy"] if batch_positions is not None else None
         
         for mod in self.modalities:
             mod_x = x[mod]
+            
+            # 1. Extraemos los metadatos específicos de esta modalidad (si existen)
+            mod_bp = None
+            if batch_positions is not None:
+                # Extrae el sub-diccionario (ej. "optical") o usa el general si no está anidado
+                mod_bp = batch_positions.get(mod, batch_positions)
             
             if mod_x.dim() == 4:
                 mod_x = mod_x.unsqueeze(2)
@@ -177,7 +188,9 @@ class UnifiedMMViT(Encoder):
             H_p, W_p = toks_spatial.shape[-2:]
             
             toks_spatial = toks_spatial.view(B, T, self.embed_dim, H_p, W_p).permute(0, 2, 1, 3, 4)
-            temporal_fused, _ = self.tmaps[mod](toks_spatial, doy)
+            
+            # 2. Pasamos el diccionario mod_bp completo al LTAE2d
+            temporal_fused, _ = self.tmaps[mod](toks_spatial, mod_bp)
             
             toks_flat = temporal_fused.flatten(2).transpose(1, 2)
             toks_flat = toks_flat + self.pos_embed + self.modality_embeds[mod]
@@ -203,7 +216,10 @@ class UnifiedMMViT(Encoder):
 
         out = fused_tokens
         for blk in self.blocks:
-            out = blk(out)
+            if self.training:
+                out = checkpoint(blk, out, use_reentrant=False)
+            else:
+                out = blk(out)
         
         out = self.norm(out)
         

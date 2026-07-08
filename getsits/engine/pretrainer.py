@@ -22,6 +22,30 @@ def all_reduce(x, op="AVG"):
         return functional_all_reduce(x, op=op_enum)
     else:
         return x
+    
+def dict_to_device(d, device):
+    """Lleva diccionarios anidados recursivamente al dispositivo."""
+    res = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            res[k] = dict_to_device(v, device)
+        elif isinstance(v, torch.Tensor):
+            res[k] = v.to(device)
+        else:
+            res[k] = v
+    return res
+
+def slice_metadata(d, indices, T):
+    """Recorta la dimensión temporal de los metadatos de forma recursiva."""
+    res = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            res[k] = slice_metadata(v, indices, T)
+        elif isinstance(v, torch.Tensor) and v.dim() >= 2 and v.shape[1] == T:
+            res[k] = v[:, indices]
+        else:
+            res[k] = v
+    return res
 
 class Trainer:
     def __init__(
@@ -153,10 +177,9 @@ class Trainer:
 
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
-
-            data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
             
             if str(self.criterion) == "LeJEPA":
+                data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
                 anysat_flag = False
                 views = []
                 for _ in range(self.n_global):
@@ -201,7 +224,7 @@ class Trainer:
                     # 2. Llevar metadata al dispositivo (doy, etc.)
                     metadata = None
                     if "metadata" in data and data["metadata"] is not None:
-                        metadata = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in data["metadata"].items()}
+                        metadata = dict_to_device(data.get("metadata", {}), self.device)
 
                     # 3. Generar las vistas fuertemente aumentadas (Z' y Z'')
                     # temporal_transform maneja la consistencia espacio-temporal y multimodal automáticamente
@@ -221,6 +244,7 @@ class Trainer:
                     
                     loss = outputs["loss"]
                 else:
+                    data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
                     img = self.temporal_transform(data["image"]["optical"].to(self.device))
                     with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
                         loss = self.criterion(img, self.model, batch_positions=data["metadata"])
@@ -349,7 +373,7 @@ class Trainer:
                 image_dict = {k: v.to(self.device) for k, v in data["image"].items()}
                 metadata = None
                 if "metadata" in data and data["metadata"] is not None:
-                    metadata = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in data["metadata"].items()}
+                    metadata = dict_to_device(data.get("metadata", {}), self.device)
 
                 self.training_stats["data_time"].update(time.time() - end_time)
 

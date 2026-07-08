@@ -123,17 +123,24 @@ class Sen1Floods11(RawGeoFMDataset):
         location = os.path.basename(file_name).split("_")[0]
         location = "Cambodia" if location == "Mekong" else location
         
-        date = pd.to_datetime(
-            self.metadata[self.metadata["location"] == location]["s2_date"].item()
-        )
+        # Extraer la fila correspondiente a la ubicación
+        row = self.metadata[self.metadata["location"] == location].iloc[0]
 
-        doy = date.timetuple().tm_yday
-        lat = self.metadata[self.metadata["location"] == location]["approx_lat"].item()
-        lon = self.metadata[self.metadata["location"] == location]["approx_lon"].item()
+        # Extraer fechas independientes
+        s2_date = pd.to_datetime(row["s2_date"])
+        # Si s1_date está en el GeoJSON lo usamos, si no, usamos un fallback seguro
+        s1_date = pd.to_datetime(row["s1_date"])
+
+        s2_doy = s2_date.timetuple().tm_yday
+        s1_doy = s1_date.timetuple().tm_yday
         
-        delta_days = (date - reference_date).days
+        lat = row["approx_lat"]
+        lon = row["approx_lon"]
         
-        return delta_days, doy, lat, lon
+        s2_delta_days = (s2_date - reference_date).days
+        s1_delta_days = (s1_date - reference_date).days
+        
+        return s2_delta_days, s2_doy, s1_delta_days, s1_doy, lat, lon
 
     def __getitem__(self, index):
         with rasterio.open(self.s2_image_list[index]) as src:
@@ -146,9 +153,8 @@ class Sen1Floods11(RawGeoFMDataset):
         with rasterio.open(self.target_list[index]) as src:
             target = src.read(1)
 
-        timestamp, doy, lat, lon = self._get_metadata(index)
+        s2_ts, s2_doy, s1_ts, s1_doy, lat, lon = self._get_metadata(index)
 
-        doy_norm = torch.tensor([doy], dtype=torch.float32) / 365.25
         lat_norm = torch.tensor(lat, dtype=torch.float32) / 90.0
         lon_norm = torch.tensor(lon, dtype=torch.float32) / 180.0
 
@@ -164,10 +170,18 @@ class Sen1Floods11(RawGeoFMDataset):
             },
             "target": target,
             "metadata": {
-                "time_linear": torch.tensor([timestamp], dtype=torch.float32),
-                "doy": doy_norm,
-                "lat": lat_norm,
-                "lon": lon_norm
+                "optical": {
+                    "time_linear": torch.tensor([s2_ts], dtype=torch.float32),
+                    "doy": torch.tensor([s2_doy], dtype=torch.float32) / 365.25,
+                    "lat": lat_norm,
+                    "lon": lon_norm
+                },
+                "sar": {
+                    "time_linear": torch.tensor([s1_ts], dtype=torch.float32),
+                    "doy": torch.tensor([s1_doy], dtype=torch.float32) / 365.25,
+                    "lat": lat_norm,
+                    "lon": lon_norm
+                },
             }
         }
 
