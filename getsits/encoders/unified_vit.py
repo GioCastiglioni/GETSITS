@@ -160,11 +160,12 @@ class UnifiedMMViT(Encoder):
                     param.requires_grad = False
 
     def load_encoder_weights(self, logger, from_scratch=False):
-        if not from_scratch and self.encoder_weights:
-            checkpoint = torch.load(self.encoder_weights, map_location="cpu", weights_only=False)
-            state_dict = checkpoint.get("model", checkpoint.get("state_dict", checkpoint))
-            self.load_state_dict(state_dict, strict=False)
-            logger.info(f"Loaded weights for {self.model_name} from {self.encoder_weights}")
+        if not from_scratch:
+            logger.info(f"Loading pre-trained weights from {self.encoder_weights}...")
+            model_dict = torch.load(self.encoder_weights, map_location="cpu", weights_only=False)["model"]
+            self.load_state_dict(model_dict)
+            logger.info("Pre-trained weights loaded successfully.")
+        else:pass
 
     def forward(self, x: dict, batch_positions=None, force_alpha=None, return_projected=False):
         processed_tokens = {}
@@ -205,28 +206,38 @@ class UnifiedMMViT(Encoder):
             B = fused_tokens.shape[0]
             rand_val = torch.rand(B, 1, 1, device=fused_tokens.device)
             alpha = torch.zeros_like(rand_val)
+            
             alpha[rand_val < 0.33] = 1.0 
             alpha[(rand_val >= 0.33) & (rand_val < 0.66)] = 0.0 
             
             mix_mask = rand_val >= 0.66
-            alpha[mix_mask] = torch.rand(mix_mask.sum(), 1, 1, device=fused_tokens.device)
+            alpha[mix_mask] = torch.rand(mix_mask.sum(), device=fused_tokens.device)
+            
             fused_tokens = alpha * processed_tokens["optical"] + (1 - alpha) * processed_tokens["sar"]
         else:
             fused_tokens = sum(processed_tokens.values()) / len(self.modalities)
 
         out = fused_tokens
-        for blk in self.blocks:
+        features = []
+        
+        for i, blk in enumerate(self.blocks):
             if self.training:
                 out = checkpoint(blk, out, use_reentrant=False)
             else:
                 out = blk(out)
+            
+            # Si el índice del bloque actual fue solicitado en la arquitectura
+            if i in self.output_layers:
+                features.append(self.norm(out))
         
-        out = self.norm(out)
-        
-        B, N, D = out.shape
-        out_spatial = out.transpose(1, 2).reshape(B, D, H_p, W_p)
+        out_spatial_list = []
+        for f in features:
+            B, N, D = f.shape
+            out_spatial_list.append(f.transpose(1, 2).reshape(B, D, H_p, W_p))
         
         if return_projected:
-            return self.projector(out_spatial)
+            # Para CoMM, el proyector solo usa la capa final de la pirámide
+            return self.projector(out_spatial_list[-1])
             
-        return [out_spatial]
+        # Retorna la pirámide completa de 4 niveles para el UPerNet
+        return out_spatial_list

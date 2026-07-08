@@ -11,6 +11,41 @@ from getsits.encoders.vit import Block
 from torch.nn.init import trunc_normal_
 from getsits.encoders.pos_embed import get_2d_sincos_pos_embed_with_scale
 
+class FocalLossSoftMax(nn.Module):
+    def __init__(
+        self,
+        gamma: float = 2.0,
+        ignore_index: int = -1,
+    ):
+        super(FocalLossSoftMax, self).__init__()
+        self.gamma = gamma
+        self.ignore_index = ignore_index
+
+    def forward(self, input: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # input: [B, C, H, W]
+        # targets: [B, H, W]
+        
+        log_p = F.log_softmax(input, dim=1)
+        ce_loss = F.nll_loss(log_p, targets, reduction='none', ignore_index=self.ignore_index)
+        
+        with torch.no_grad():
+            p = torch.exp(log_p)
+            # targets: [B, H, W] -> [B, 1, H, W]
+            gathered_p = torch.gather(p, dim=1, index=targets.unsqueeze(1).clamp(min=0))
+            gathered_p = gathered_p.squeeze(1)
+        
+        focal_weight = (1.0 - gathered_p) ** self.gamma
+        loss = focal_weight * ce_loss
+        
+        if self.ignore_index >= 0:
+            mask = targets != self.ignore_index
+            return loss[mask].mean()
+        
+        return loss.mean()
+    
+    def __str__(self):
+        return 'FocalLoss'
+
 class LeJEPA(nn.Module):
     def __init__(
             self,

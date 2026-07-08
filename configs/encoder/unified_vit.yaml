@@ -1,5 +1,6 @@
 _target_: getsits.encoders.unified_vit.UnifiedMMViT
 model_name: unified_vit
+encoder_weights: /home/gcast/GETSITS/results/20260708_031414_964f61_unified_vit_seg_upernet_mt_ltae_sen1floods11/checkpoint__best.pth
 embed_dim: 384
 patch_size: 16
 depth: 12

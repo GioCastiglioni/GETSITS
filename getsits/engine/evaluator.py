@@ -9,6 +9,16 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+def dict_to_device(d, device):
+    res = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            res[k] = dict_to_device(v, device)
+        elif isinstance(v, torch.Tensor):
+            res[k] = v.to(device)
+        else:
+            res[k] = v
+    return res
 
 class Evaluator:
     """
@@ -137,7 +147,7 @@ class SegEvaluator(Evaluator):
         )
         total_loss = 0
         for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
-            data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
+            data["metadata"] = dict_to_device(data.get("metadata", {}), self.device)
             image, target = data["image"], data["target"]
                 
             image_dict = {k: v.to(self.device) for k, v in image.items()}

@@ -500,12 +500,13 @@ class SegMMUPerNet(SegUPerNet):
         num_classes: int,
         finetune: bool,
         channels: int,
-        single_modality_channels: list[int],
         pool_scales=(1, 2, 3, 6),
         feature_multiplier: int = 1,
         segmentation: bool = True,
         **kwargs
     ):
+        # Inicializamos el SegUPerNet base. Al no pasarle 'in_channels', 
+        # lo inferirá automáticamente de 'encoder.output_dim' (la pirámide del UnifiedMMViT).
         super().__init__(
             encoder=encoder,
             num_classes=num_classes,
@@ -513,68 +514,48 @@ class SegMMUPerNet(SegUPerNet):
             channels=channels,
             pool_scales=pool_scales,
             feature_multiplier=feature_multiplier,
-            in_channels=single_modality_channels,
-            **kwargs
         )
         
         self.model_name = "SegMMUPerNet"
         self.segmentation = segmentation
         self.finetune = finetune 
         
-        self.mm_projectors = nn.ModuleList([
-            nn.Conv2d(enc_ch, sm_ch, kernel_size=1)
-            for enc_ch, sm_ch in zip(self.encoder.topology, single_modality_channels)
-        ])
+        # Eliminamos los mm_projectors porque UnifiedMMViT ya entrega
+        # un espacio latente fusionado y unificado en formato de pirámide.
 
-    def forward(self, img, batch_positions=None, **kwargs):
-        self._current_batch_positions = batch_positions
-        out = super().forward(img, batch_positions=batch_positions, **kwargs)
-        
-        if not getattr(self, 'segmentation', True) and out.dim() > 2:
-            out = torch.nn.functional.adaptive_avg_pool2d(out, (1, 1)).flatten(1)
-            
-        return out
-        
-    def forward_fmaps(self, img: dict[str, torch.Tensor]) -> torch.Tensor:
-        batch_positions = getattr(self, '_current_batch_positions', None)
-        
-        # [B, C, T, H, W]
-        is_temporal = False
-        for v in img.values():
-            if v.dim() == 5 and v.shape[2] > 1:
-                is_temporal = True
-                break
-                
-        if is_temporal:
-            if not getattr(self, 'finetune', True):
-                with torch.no_grad():
-                    feat = self.encoder(img, batch_positions=batch_positions)
-            else:
+    def forward_fmaps(self, img: dict[str, torch.Tensor], batch_positions=None) -> torch.Tensor:
+        # Pasa los diccionarios intactos al encoder. 
+        # UnifiedMMViT se encarga de la temporalidad (LTAE2d) y la fusión estocástica.
+        if not getattr(self, 'finetune', True):
+            with torch.no_grad():
                 feat = self.encoder(img, batch_positions=batch_positions)
-                
-            if getattr(self.encoder, 'multi_temporal_output', False):
-                feat = [f.squeeze(-3) for f in feat]
         else:
-            bp_sliced = None
-            if batch_positions is not None:
-                bp_sliced = {}
-                for k, v in batch_positions.items():
-                    if isinstance(v, torch.Tensor) and v.dim() >= 2 and v.shape[1] > 1:
-                        bp_sliced[k] = v[:, 0:1] 
-                    else:
-                        bp_sliced[k] = v
+            feat = self.encoder(img, batch_positions=batch_positions)
             
-            sliced_img = {k: v[:, :, 0, :, :] if v.dim() == 5 else v for k, v in img.items()}
-            
-            if not getattr(self, 'finetune', True):
-                with torch.no_grad():
-                    feat = self.encoder(sliced_img, batch_positions=bp_sliced)
-            else:
-                feat = self.encoder(sliced_img, batch_positions=bp_sliced)
-                
-        proj_feat = [proj(f) for proj, f in zip(self.mm_projectors, feat)]
+        # feat es una lista de 4 tensores [B, D, H, W]. 
+        # UPerNet los procesa de forma nativa.
+        feat = self.neck(feat)
+        feat = self._forward_feature(feat)
         
-        out = self.neck(proj_feat)
-        out = self._forward_feature(out)
+        return feat
+
+    def forward_features(self, x: dict[str, torch.Tensor], batch_positions=None):
+        feat = self.forward_fmaps(x, batch_positions=batch_positions)
         
-        return out
+        # Extraemos las dimensiones espaciales de la primera modalidad disponible
+        first_k = list(x.keys())[0]
+        output_shape = x[first_k].shape[-2:]
+
+        feat = F.interpolate(feat, size=output_shape, mode="bilinear", align_corners=self.align_corners)
+        
+        return feat
+
+    def forward(
+        self, img: dict[str, torch.Tensor], output_shape: torch.Size | None = None, batch_positions=None, return_feats=False
+    ) -> torch.Tensor:
+        """Compute the segmentation output."""
+        
+        feat = self.forward_features(img, batch_positions=batch_positions)
+        output = self.conv_seg(feat)
+
+        return output

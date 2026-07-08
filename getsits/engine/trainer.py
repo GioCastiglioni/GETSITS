@@ -18,6 +18,17 @@ from torch.utils.data import DataLoader
 from getsits.utils.logger import RunningAverageMeter, sec_to_hm
 from getsits.utils.utils import ConsistentTransform
 
+def dict_to_device(d, device):
+    res = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            res[k] = dict_to_device(v, device)
+        elif isinstance(v, torch.Tensor):
+            res[k] = v.to(device)
+        else:
+            res[k] = v
+    return res
+
 class Trainer:
     def __init__(
         self,
@@ -141,7 +152,7 @@ class Trainer:
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
             
-            data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
+            data["metadata"] = dict_to_device(data.get("metadata", {}), self.device)
             image, target = data["image"], data["target"]
             image = {k: v.to(self.device) for k, v in image.items()}
             target = target.to(self.device)
