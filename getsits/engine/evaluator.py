@@ -140,6 +140,10 @@ class SegEvaluator(Evaluator):
         confusion_matrix = torch.zeros(
             (self.num_classes, self.num_classes), device=self.device
         )
+
+        ml_num_classes = self.num_classes - 1
+        ml_confusion_matrix = torch.zeros((3, ml_num_classes), device=self.device)
+
         total_loss = 0
         all_local_cms = [] 
 
@@ -179,6 +183,29 @@ class SegEvaluator(Evaluator):
                     
                     if self.split == 'test':
                         all_local_cms.append(count_b.cpu())
+
+                    unique_t = torch.unique(t_b)
+                    unique_p = torch.unique(p_b)
+
+                    # Filtrar ignore_index y clase 0, luego restar 1
+                    valid_t = unique_t[(unique_t > 0) & (unique_t != self.ignore_index)] - 1
+                    valid_p = unique_p[(unique_p > 0) & (unique_p != self.ignore_index)] - 1
+
+                    # Asegurar que los índices queden dentro de [0, 30]
+                    valid_t = valid_t[(valid_t >= 0) & (valid_t < ml_num_classes)]
+                    valid_p = valid_p[(valid_p >= 0) & (valid_p < ml_num_classes)]
+
+                    # Crear vectores pseudo-targets (one-hot)
+                    y_true = torch.zeros(ml_num_classes, device=self.device)
+                    y_pred = torch.zeros(ml_num_classes, device=self.device)
+
+                    if len(valid_t) > 0: y_true[valid_t] = 1.0
+                    if len(valid_p) > 0: y_pred[valid_p] = 1.0
+
+                    # Acumular True Positives, False Positives y False Negatives
+                    ml_confusion_matrix[0] += (y_pred * y_true)          # TP
+                    ml_confusion_matrix[1] += (y_pred * (1 - y_true))    # FP
+                    ml_confusion_matrix[2] += ((1 - y_pred) * y_true)    # FN
                 
                 self.is_multilabel = False
                 if self.split == 'test':
@@ -203,8 +230,15 @@ class SegEvaluator(Evaluator):
         torch.distributed.all_reduce(
             confusion_matrix, op=torch.distributed.ReduceOp.SUM
         )
+
+        if not hasattr(self, 'is_multilabel') or not self.is_multilabel:
+            torch.distributed.all_reduce(
+                ml_confusion_matrix, op=torch.distributed.ReduceOp.SUM
+            )
+            metrics = self.compute_metrics(confusion_matrix.cpu(), ml_confusion_matrix.cpu())
+        else:
+            metrics = self.compute_metrics(confusion_matrix.cpu())
         
-        metrics = self.compute_metrics(confusion_matrix.cpu())
         metrics["loss"] = total_loss / (self._get_dist_info()[1] * (batch_idx+1))
 
         if self.split == 'test' and hasattr(self, 'is_multilabel') and not self.is_multilabel:
@@ -351,7 +385,7 @@ class SegEvaluator(Evaluator):
             plt.savefig(filename, dpi=dpi)
             plt.close(fig)
 
-    def compute_metrics(self, confusion_matrix):
+    def compute_metrics(self, confusion_matrix, ml_confusion_matrix=None):
         if hasattr(self, 'is_multilabel') and self.is_multilabel:
             tp = confusion_matrix[0]
             fp = confusion_matrix[1]
@@ -459,6 +493,24 @@ class SegEvaluator(Evaluator):
                 "mAcc_OD": macc_od,
             }
 
+            if ml_confusion_matrix is not None:
+                tp_ml = ml_confusion_matrix[0]
+                fp_ml = ml_confusion_matrix[1]
+                fn_ml = ml_confusion_matrix[2]
+                eps = 1e-6
+
+                ml_precision = tp_ml / (tp_ml + fp_ml + eps) * 100
+                ml_recall = tp_ml / (tp_ml + fn_ml + eps) * 100
+                ml_f1 = 2 * (ml_precision * ml_recall) / (ml_precision + ml_recall + eps)
+
+                metrics["ML_mF1"] = ml_f1.mean().item()
+                metrics["ML_mPrecision"] = ml_precision.mean().item()
+                metrics["ML_mRecall"] = ml_recall.mean().item()
+                
+                metrics["ML_F1"] = ml_f1.tolist()
+                metrics["ML_Precision"] = ml_precision.tolist()
+                metrics["ML_Recall"] = ml_recall.tolist()
+
             return metrics
 
     def log_metrics(self, metrics):
@@ -517,6 +569,20 @@ class SegEvaluator(Evaluator):
 
         self.logger.info(loss_str)
 
+        if "ML_mF1" in metrics:
+            # Descartamos el nombre de la clase 0 ("Background" / "No Crop")
+            ml_classes = self.classes[1:]
+            
+            ml_f1_str = format_metric("ML-Extracted F1-score", metrics["ML_F1"], metrics["ML_mF1"], ml_classes)
+            ml_prec_str = format_metric("ML-Extracted Precision", metrics["ML_Precision"], metrics["ML_mPrecision"], ml_classes)
+            ml_rec_str = format_metric("ML-Extracted Recall", metrics["ML_Recall"], metrics["ML_mRecall"], ml_classes)
+            
+            self.logger.info("\n=== MULTI-LABEL SEMANTIC PRESENCE METRICS ===")
+            self.logger.info(ml_f1_str)
+            self.logger.info(ml_prec_str)
+            self.logger.info(ml_rec_str)
+            self.logger.info("=============================================\n")
+
         if self.use_wandb and self.rank == 0:
             wandb_log_dict = {
                 f"{self.split}_mIoU": metrics["mIoU"],
@@ -545,6 +611,13 @@ class SegEvaluator(Evaluator):
                 wandb_log_dict[f"{self.split}_mIoU_OD"] = metrics["mIoU_OD"]
                 wandb_log_dict[f"{self.split}_mF1_OD"] = metrics["mF1_OD"]
                 wandb_log_dict[f"{self.split}_mAcc_OD"] = metrics["mAcc_OD"]
+            
+            if "ML_mF1" in metrics:
+                wandb_log_dict.update({
+                    f"{self.split}_ML_mF1": metrics["ML_mF1"],
+                    f"{self.split}_ML_mPrecision": metrics["ML_mPrecision"],
+                    f"{self.split}_ML_mRecall": metrics["ML_mRecall"],
+                })
 
             wandb.log(wandb_log_dict)
     def _get_dist_info(self):
