@@ -686,6 +686,36 @@ class CoMMLoss(nn.Module):
         return "CoMMLoss"
     
 
+import torch.distributed as dist
+
+class GatherLayer(torch.autograd.Function):
+    """
+    Recopila tensores de todas las GPUs y soporta la retropropagación
+    de gradientes a través de los procesos (Vital para InfoNCE DDP).
+    """
+    @staticmethod
+    def forward(ctx, x):
+        if not dist.is_available() or not dist.is_initialized():
+            return x
+        output = [torch.zeros_like(x) for _ in range(dist.get_world_size())]
+        dist.all_gather(output, x)
+        return tuple(output)
+
+    @staticmethod
+    def backward(ctx, *grads):
+        if not dist.is_available() or not dist.is_initialized():
+            return grads[0]
+        all_gradients = torch.stack(grads)
+        dist.all_reduce(all_gradients)
+        # Retorna el gradiente que le corresponde a este proceso/GPU
+        return all_gradients[dist.get_rank()]
+
+def all_gather_with_grad(tensor):
+    if not dist.is_available() or not dist.is_initialized():
+        return tensor
+    gathered = GatherLayer.apply(tensor)
+    return torch.cat(gathered, dim=0)
+
 class UnifiedCoMMLoss(nn.Module):
     def __init__(self, temperature=0.1):
         super().__init__()
@@ -745,6 +775,19 @@ class UnifiedCoMMLoss(nn.Module):
 
         z_1, z_2, z_prime, z_dprime = torch.split(z_all, B, dim=0)
 
+        # 1. Normalización L2 Obligatoria
+        z_1 = F.normalize(z_1, p=2, dim=-1)
+        z_2 = F.normalize(z_2, p=2, dim=-1)
+        z_prime = F.normalize(z_prime, p=2, dim=-1)
+        z_dprime = F.normalize(z_dprime, p=2, dim=-1)
+
+        # 2. SINCRONIZACIÓN DDP (El paso faltante)
+        z_1 = all_gather_with_grad(z_1)
+        z_2 = all_gather_with_grad(z_2)
+        z_prime = all_gather_with_grad(z_prime)
+        z_dprime = all_gather_with_grad(z_dprime)
+
+        # 3. Cálculo de InfoNCE (Ahora el batch es 128 global en vez de 64 local)
         loss_z_z = (self.infonce(z_prime, z_dprime) + self.infonce(z_dprime, z_prime)) / 2.0
         
         loss_z1_zprime = (self.infonce(z_1, z_prime) + self.infonce(z_prime, z_1)) / 2.0
@@ -764,3 +807,108 @@ class UnifiedCoMMLoss(nn.Module):
 
     def __str__(self):
         return "UnifiedCoMMLoss"
+
+
+class LeJEPA_CoMMLoss(nn.Module):
+    def __init__(self, use_rbf=True, sigma_max=2.0, sigma_min=0.5, sigreg_weight=0.05, patch_weight=0.5):
+        super().__init__()
+        self.use_rbf = use_rbf
+        self.sigma_max = sigma_max
+        self.sigma_min = sigma_min
+        self.sigma = sigma_max
+        self.sigreg_weight = sigreg_weight
+        self.patch_weight = patch_weight
+        
+        self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=4096)
+
+    def step(self, current_epoch, total_epochs):
+        if self.use_rbf:
+            self.sigma = self.sigma_min + 0.5 * (self.sigma_max - self.sigma_min) * (1 + math.cos(math.pi * current_epoch / total_epochs))
+
+    def k_sim(self, x, y):
+        mse = F.mse_loss(x, y, reduction='none').mean(dim=-1) 
+        
+        if self.use_rbf:
+            correntropy = torch.exp(-mse / (2 * self.sigma ** 2))
+            return 1.0 - correntropy.mean()
+        
+        return mse.mean()
+
+    def _concat_dicts(self, dicts):
+        out = {}
+        for k in dicts[0].keys():
+            if isinstance(dicts[0][k], torch.Tensor):
+                out[k] = torch.cat([d[k] for d in dicts], dim=0)
+            elif isinstance(dicts[0][k], dict):
+                out[k] = self._concat_dicts([d[k] for d in dicts])
+            else:
+                out[k] = dicts[0][k]
+        return out
+
+    def forward(self, model, orig_img_dict, aug1_img_dict, aug2_img_dict, batch_positions=None):
+        first_k = list(orig_img_dict.keys())[0]
+        B = orig_img_dict[first_k].shape[0]
+        device = orig_img_dict[first_k].device
+
+        merged_img_dict = self._concat_dicts([orig_img_dict, orig_img_dict, aug1_img_dict, aug2_img_dict])
+        
+        merged_bp = None
+        if batch_positions is not None:
+            merged_bp = self._concat_dicts([batch_positions, batch_positions, batch_positions, batch_positions])
+
+        # 1.0: Opt, 0.0: SAR, 0.5: Fusion
+        force_alpha = torch.cat([
+            torch.full((B, 1, 1), 1.0, device=device),
+            torch.full((B, 1, 1), 0.0, device=device),
+            torch.full((B, 1, 1), 0.5, device=device),
+            torch.full((B, 1, 1), 0.5, device=device),
+        ], dim=0)
+
+        # return_projected=False -> [4B, D, H, W]
+        out_spatial_list = model(merged_img_dict, batch_positions=merged_bp, force_alpha=force_alpha, return_projected=False)
+        
+        z_all_spatial = out_spatial_list[-1] 
+        
+        # [4B, N, D]
+        z_all_patches = z_all_spatial.flatten(2).transpose(1, 2)
+        z_1, z_2, z_p, z_dp = torch.split(z_all_patches, B, dim=0)
+        
+        # [4B, D]
+        z_all_bar = z_all_spatial.mean(dim=(2, 3))
+        z_1_bar, z_2_bar, z_p_bar, z_dp_bar = torch.split(z_all_bar, B, dim=0)
+
+        # --- SINCRONIZACIÓN DDP ---
+        z_1 = all_gather_with_grad(z_1)
+        z_2 = all_gather_with_grad(z_2)
+        z_p = all_gather_with_grad(z_p)
+        z_dp = all_gather_with_grad(z_dp)
+
+        z_1_bar = all_gather_with_grad(z_1_bar)
+        z_2_bar = all_gather_with_grad(z_2_bar)
+        z_p_bar = all_gather_with_grad(z_p_bar)
+        z_dp_bar = all_gather_with_grad(z_dp_bar)
+        # ---------------------------
+
+        loss_patch = self.k_sim(z_1, z_2)
+        
+        loss_cross = 0.5 * (
+            self.k_sim(z_1_bar, z_p_bar) + self.k_sim(z_1_bar, z_dp_bar) +
+            self.k_sim(z_2_bar, z_p_bar) + self.k_sim(z_2_bar, z_dp_bar)
+        )
+        
+        loss_synergy = self.k_sim(z_p_bar, z_dp_bar)
+        
+        loss_sigreg = self.sigreg(z_all_bar)
+        
+        total_loss = (self.patch_weight * loss_patch) + loss_cross + loss_synergy + (self.sigreg_weight * loss_sigreg)
+        
+        return {
+            "loss": total_loss, 
+            "loss_patch": loss_patch, 
+            "loss_cross": loss_cross,
+            "loss_synergy": loss_synergy,
+            "loss_sigreg": loss_sigreg
+        }
+
+    def __str__(self):
+        return "LeJEPA_CoMMLoss"

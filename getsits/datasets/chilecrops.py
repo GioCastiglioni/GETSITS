@@ -273,7 +273,6 @@ class CropChileDataset(RawGeoFMDataset):
         metadata = metadata[:self.multi_temporal]
         doy_norm = ((metadata + self.ref_doy - 1) % 365) / 365
 
-        # ── Estáticos: (1, 1, H, W) ───────────────────────────
         static_cfg = {
             "elevation": (self.elevation_dir, "elevation"),
             "landform": (self.landform_dir, "landform"),

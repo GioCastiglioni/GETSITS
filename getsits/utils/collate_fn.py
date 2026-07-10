@@ -19,13 +19,14 @@ def get_collate_fn(modalities: list[str]) -> Callable:
         Returns:
             A dictionary with keys 'image', 'target', and 'metadata' (if available).
         """
-        T_max = 0
+        
         for modality in modalities:
+            T_max = 0
             for x in batch:
                 if len(x["image"][modality].shape) == 4:
                     T_max = max(T_max, x["image"][modality].shape[1])
                     
-        for modality in modalities:
+            # 2. Hacer padding solo si es menor al T_max de esta modalidad
             for i, x in enumerate(batch):
                 if len(x["image"][modality].shape) == 4:
                     T = x["image"][modality].shape[1]

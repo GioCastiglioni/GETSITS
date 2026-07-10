@@ -175,6 +175,9 @@ class Trainer:
         """
         self.model.train()
 
+        if hasattr(self.criterion, 'step'):
+            self.criterion.step(epoch, self.n_epochs)
+            
         end_time = time.time()
         for batch_idx, data in enumerate(self.train_loader):
             
@@ -243,6 +246,22 @@ class Trainer:
                     )
                     
                     loss = outputs["loss"]
+                elif str(self.criterion) == "LeJEPA_CoMMLoss":
+                    image_dict = {k: v.to(self.device) for k, v in data["image"].items()}
+                    metadata = dict_to_device(data.get("metadata", {}), self.device)
+
+                    with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
+                        aug1_img_dict = self.temporal_transform(image_dict)
+                        aug2_img_dict = self.temporal_transform(image_dict)
+                        
+                        outputs = self.criterion(
+                            self.model,
+                            orig_img_dict=image_dict, 
+                            aug1_img_dict=aug1_img_dict, 
+                            aug2_img_dict=aug2_img_dict, 
+                            batch_positions=metadata
+                        )
+                        loss = outputs["loss"]
                 else:
                     data["metadata"] = {k: v.to(self.device) for k,v in data["metadata"].items()}
                     img = self.temporal_transform(data["image"]["optical"].to(self.device))
@@ -425,6 +444,74 @@ class Trainer:
                 )
                 
             return final_val_loss
+        elif str(self.criterion) == "LeJEPA_CoMMLoss":
+
+            total_epoch_loss = 0.0
+            total_patch = 0.0
+            total_cross = 0.0
+            total_synergy = 0.0
+            total_sigreg = 0.0
+            
+            end_time = time.time()
+            for batch_idx, data in enumerate(tqdm(self.val_loader, desc=f"Evaluating Epoch {epoch}", disable=self.rank != 0)):
+
+                image_dict = {k: v.to(self.device) for k, v in data["image"].items()}
+                metadata = dict_to_device(data.get("metadata", {}), self.device)
+
+                self.training_stats["data_time"].update(time.time() - end_time)
+
+                with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
+                    aug1_img_dict = self.temporal_transform(image_dict)
+                    aug2_img_dict = self.temporal_transform(image_dict)
+                    
+                    outputs = self.criterion(
+                        self.model,
+                        orig_img_dict=image_dict, 
+                        aug1_img_dict=aug1_img_dict, 
+                        aug2_img_dict=aug2_img_dict, 
+                        batch_positions=metadata
+                    )
+                    
+                total_epoch_loss += outputs["loss"].item()
+                total_patch += outputs["loss_patch"].item()
+                total_cross += outputs["loss_cross"].item()
+                total_synergy += outputs["loss_synergy"].item()
+                total_sigreg += outputs["loss_sigreg"].item()
+                
+                torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
+                end_time = time.time()
+
+            # Promediar sobre el DataLoader
+            final_loss = total_epoch_loss / len(self.val_loader)
+            final_patch = total_patch / len(self.val_loader)
+            final_cross = total_cross / len(self.val_loader)
+            final_synergy = total_synergy / len(self.val_loader)
+            final_sigreg = total_sigreg / len(self.val_loader)
+
+            # Sincronización en sistemas distribuidos
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                metrics_tensor = torch.tensor(
+                    [final_loss, final_patch, final_cross, final_synergy, final_sigreg], 
+                    device=self.device
+                )
+                torch.distributed.all_reduce(metrics_tensor, op=torch.distributed.ReduceOp.AVG)
+                final_loss, final_patch, final_cross, final_synergy, final_sigreg = metrics_tensor.tolist()
+
+            # Reporte a Weights & Biases
+            if self.use_wandb and self.rank == 0:
+                self.wandb.log(
+                    {
+                        "val_loss": final_loss,
+                        "val_patch_redundancy": final_patch,
+                        "val_cross_uniqueness": final_cross,
+                        "val_synergy": final_synergy,
+                        "val_sigreg": final_sigreg,
+                        "epoch": epoch
+                    },
+                    step = epoch * len(self.train_loader)
+                )
+                
+            return final_loss
         else:
             total_epoch_loss = 0
             for batch_idx, data in enumerate(tqdm(self.val_loader, desc=f"Evaluating Epoch {epoch}", disable=self.rank != 0)):
@@ -463,15 +550,42 @@ class Trainer:
     def temporal_transform(self, x: torch.Tensor | dict[str, torch.Tensor]):
         if isinstance(x, dict):
             keys = list(x.keys())
-            tensors = [x[k] for k in keys]
-            splits = [t.shape[1] for t in tensors]
             
-            x_concat = torch.cat(tensors, dim=1)
+            # 1. Encontrar el T máximo en el diccionario (ej. T=20 para S2)
+            T_max = 1
+            for k in keys:
+                if x[k].dim() == 5:
+                    T_max = max(T_max, x[k].shape[2])
+                    
+            # 2. Expandir temporalmente (sin gastar memoria extra) los de T=1
+            tensors_expanded = []
+            for k in keys:
+                t = x[k]
+                if t.dim() == 5 and t.shape[2] < T_max:
+                    # .expand crea una vista virtual temporal de T=20
+                    t = t.expand(-1, -1, T_max, -1, -1)
+                tensors_expanded.append(t)
+                
+            # Canales originales para separar después (ej. 12 y 3)
+            splits = [x[k].shape[1] for k in keys] 
             
+            # 3. Concatenar y Transformar globalmente
+            x_concat = torch.cat(tensors_expanded, dim=1)
             x_out = self._do_temporal_transform(x_concat)
             
+            # 4. Volver a separar las modalidades
             x_split = torch.split(x_out, splits, dim=1)
-            return {k: v for k, v in zip(keys, x_split)}
+            
+            # 5. Volver a recortar los que eran T=1 originalmente (SAR)
+            out_dict = {}
+            for i, k in enumerate(keys):
+                orig_T = x[k].shape[2] if x[k].dim() == 5 else None
+                if orig_T is not None and orig_T < T_max:
+                    out_dict[k] = x_split[i][:, :, 0:orig_T, :, :]
+                else:
+                    out_dict[k] = x_split[i]
+                    
+            return out_dict
         else:
             return self._do_temporal_transform(x)
 

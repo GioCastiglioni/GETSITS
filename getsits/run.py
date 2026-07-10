@@ -325,7 +325,7 @@ def main(cfg: DictConfig) -> None:
 
         val_loader = DataLoader(
             val_dataset,
-            sampler=DistributedSampler(val_dataset, drop_last=True, shuffle=False),
+            sampler=DistributedSampler(val_dataset, drop_last=True, shuffle=True),
             batch_size=cfg.test_batch_size,
             num_workers=cfg.test_num_workers,
             pin_memory=True,

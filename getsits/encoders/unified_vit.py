@@ -57,6 +57,46 @@ class DenseConvStem(nn.Module):
             return checkpoint(_inner_forward, x, use_reentrant=False)
         return _inner_forward(x)
 
+class AttentionStem(nn.Module):
+    def __init__(self, in_channels: int, embed_dim: int, patch_size: int = 16, input_size: int = 224, depth: int = 1, num_heads: int = 4):
+        super().__init__()
+        self.patch_size = patch_size
+        self.num_patches = (input_size // patch_size) ** 2
+        
+        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, embed_dim))
+        
+        self.blocks = nn.ModuleList([
+            Block(dim=embed_dim, num_heads=num_heads, mlp_ratio=2.0, qkv_bias=True)
+            for _ in range(depth)
+        ])
+        self.norm = nn.LayerNorm(embed_dim)
+        
+        nn.init.trunc_normal_(self.pos_embed, std=.02)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B_T, C, H, W = x.shape
+        
+        # [B*T, D, H/P, W/P]
+        x = self.proj(x)
+        H_p, W_p = x.shape[-2:]
+        
+        # [B*T, N, D]
+        x = x.flatten(2).transpose(1, 2)
+        x = x + self.pos_embed
+        
+        for blk in self.blocks:
+            if self.training:
+                x = checkpoint(blk, x, use_reentrant=False)
+            else:
+                x = blk(x)
+            
+        x = self.norm(x)
+        
+        # [B*T, D, H/P, W/P]
+        x = x.transpose(1, 2).reshape(B_T, -1, H_p, W_p)
+        return x
+
 
 class UnifiedMMViT(Encoder):
     def __init__(
@@ -107,7 +147,15 @@ class UnifiedMMViT(Encoder):
         self.tmaps = nn.ModuleDict()
         
         for mod, bands in input_bands.items():
-            self.tokenizers[mod] = DenseConvStem(len(bands), embed_dim, patch_size)
+            #self.tokenizers[mod] = DenseConvStem(len(bands), embed_dim, patch_size)
+            self.tokenizers[mod] = AttentionStem(
+                in_channels=len(bands), 
+                embed_dim=embed_dim, 
+                patch_size=patch_size,
+                input_size=input_size,
+                depth=1,
+                num_heads=4
+            )
             self.modality_embeds[mod] = nn.Parameter(torch.zeros(1, 1, embed_dim))
             self.tmaps[mod] = LTAE2d(
             in_channels=self.topology[-1],
@@ -173,11 +221,19 @@ class UnifiedMMViT(Encoder):
         for mod in self.modalities:
             mod_x = x[mod]
             
-            # 1. Extraemos los metadatos específicos de esta modalidad (si existen)
+            # 1. Extraer los metadatos: combinando los globales (lat, lon) con los locales (doy, time)
             mod_bp = None
             if batch_positions is not None:
-                # Extrae el sub-diccionario (ej. "optical") o usa el general si no está anidado
-                mod_bp = batch_positions.get(mod, batch_positions)
+                # Rescata todo lo que no sea un diccionario (ej. "lat", "lon")
+                mod_bp = {k: v for k, v in batch_positions.items() if not isinstance(v, dict)}
+                
+                # Suma los datos específicos de la modalidad (ej. "doy" de optical)
+                if mod in batch_positions and isinstance(batch_positions[mod], dict):
+                    mod_bp.update(batch_positions[mod])
+                    
+                # Si el dataset era antiguo y plano, usamos todo
+                if not mod_bp:
+                    mod_bp = batch_positions
             
             if mod_x.dim() == 4:
                 mod_x = mod_x.unsqueeze(2)
@@ -226,7 +282,6 @@ class UnifiedMMViT(Encoder):
             else:
                 out = blk(out)
             
-            # Si el índice del bloque actual fue solicitado en la arquitectura
             if i in self.output_layers:
                 features.append(self.norm(out))
         
@@ -236,8 +291,6 @@ class UnifiedMMViT(Encoder):
             out_spatial_list.append(f.transpose(1, 2).reshape(B, D, H_p, W_p))
         
         if return_projected:
-            # Para CoMM, el proyector solo usa la capa final de la pirámide
             return self.projector(out_spatial_list[-1])
             
-        # Retorna la pirámide completa de 4 niveles para el UPerNet
         return out_spatial_list
