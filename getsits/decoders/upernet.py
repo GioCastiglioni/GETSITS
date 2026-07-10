@@ -505,8 +505,6 @@ class SegMMUPerNet(SegUPerNet):
         segmentation: bool = True,
         **kwargs
     ):
-        # Inicializamos el SegUPerNet base. Al no pasarle 'in_channels', 
-        # lo inferirá automáticamente de 'encoder.output_dim' (la pirámide del UnifiedMMViT).
         super().__init__(
             encoder=encoder,
             num_classes=num_classes,
@@ -519,21 +517,14 @@ class SegMMUPerNet(SegUPerNet):
         self.model_name = "SegMMUPerNet"
         self.segmentation = segmentation
         self.finetune = finetune 
-        
-        # Eliminamos los mm_projectors porque UnifiedMMViT ya entrega
-        # un espacio latente fusionado y unificado en formato de pirámide.
 
     def forward_fmaps(self, img: dict[str, torch.Tensor], batch_positions=None) -> torch.Tensor:
-        # Pasa los diccionarios intactos al encoder. 
-        # UnifiedMMViT se encarga de la temporalidad (LTAE2d) y la fusión estocástica.
         if not getattr(self, 'finetune', True):
             with torch.no_grad():
                 feat = self.encoder(img, batch_positions=batch_positions)
         else:
             feat = self.encoder(img, batch_positions=batch_positions)
             
-        # feat es una lista de 4 tensores [B, D, H, W]. 
-        # UPerNet los procesa de forma nativa.
         feat = self.neck(feat)
         feat = self._forward_feature(feat)
         
@@ -542,7 +533,6 @@ class SegMMUPerNet(SegUPerNet):
     def forward_features(self, x: dict[str, torch.Tensor], batch_positions=None):
         feat = self.forward_fmaps(x, batch_positions=batch_positions)
         
-        # Extraemos las dimensiones espaciales de la primera modalidad disponible
         first_k = list(x.keys())[0]
         output_shape = x[first_k].shape[-2:]
 
@@ -553,9 +543,6 @@ class SegMMUPerNet(SegUPerNet):
     def forward(
         self, img: dict[str, torch.Tensor], output_shape: torch.Size | None = None, batch_positions=None, return_feats=False
     ) -> torch.Tensor:
-        """Compute the segmentation output."""
-        
         feat = self.forward_features(img, batch_positions=batch_positions)
         output = self.conv_seg(feat)
-
         return output
