@@ -754,55 +754,62 @@ class UnifiedCoMMLoss(nn.Module):
         return loss
 
     def forward(self, model, orig_img_dict, aug1_img_dict, aug2_img_dict, batch_positions=None):
-        first_k = list(orig_img_dict.keys())[0]
-        B = orig_img_dict[first_k].shape[0]
-        device = orig_img_dict[first_k].device
+        def isolate_modality(img_dict, target_mod=None):
+            out = {}
+            for k, v in img_dict.items():
+                if target_mod is None or k == target_mod:
+                    out[k] = v
+                else:
+                    out[k] = torch.zeros_like(v)
+            return out
 
-        merged_img_dict = self._concat_dicts([orig_img_dict, orig_img_dict, aug1_img_dict, aug2_img_dict])
+        z1_opt_dict = isolate_modality(aug1_img_dict, "optical")
+        z1_sar_dict = isolate_modality(aug1_img_dict, "sar")
+        z1_fus_dict = isolate_modality(aug1_img_dict, None)
+
+        z2_opt_dict = isolate_modality(aug2_img_dict, "optical")
+        z2_sar_dict = isolate_modality(aug2_img_dict, "sar")
+        z2_fus_dict = isolate_modality(aug2_img_dict, None)
+
+        merged_img_dict = self._concat_dicts([
+            z1_opt_dict, z1_sar_dict, z1_fus_dict,
+            z2_opt_dict, z2_sar_dict, z2_fus_dict
+        ])
         
         merged_bp = None
         if batch_positions is not None:
-            merged_bp = self._concat_dicts([batch_positions, batch_positions, batch_positions, batch_positions])
+            merged_bp = self._concat_dicts([batch_positions] * 6)
 
-        force_alpha = torch.cat([
-            torch.full((B, 1, 1), 1.0, device=device),
-            torch.full((B, 1, 1), 0.0, device=device),
-            torch.full((B, 1, 1), 0.5, device=device),
-            torch.full((B, 1, 1), 0.5, device=device),
-        ], dim=0)
-
-        z_all = model(merged_img_dict, batch_positions=merged_bp, force_alpha=force_alpha, return_projected=True)
-
-        z_1, z_2, z_prime, z_dprime = torch.split(z_all, B, dim=0)
-
-        # 1. Normalización L2 Obligatoria
-        z_1 = F.normalize(z_1, p=2, dim=-1)
-        z_2 = F.normalize(z_2, p=2, dim=-1)
-        z_prime = F.normalize(z_prime, p=2, dim=-1)
-        z_dprime = F.normalize(z_dprime, p=2, dim=-1)
-
-        # 2. SINCRONIZACIÓN DDP (El paso faltante)
-        z_1 = all_gather_with_grad(z_1)
-        z_2 = all_gather_with_grad(z_2)
-        z_prime = all_gather_with_grad(z_prime)
-        z_dprime = all_gather_with_grad(z_dprime)
-
-        # 3. Cálculo de InfoNCE (Ahora el batch es 128 global en vez de 64 local)
-        loss_z_z = (self.infonce(z_prime, z_dprime) + self.infonce(z_dprime, z_prime)) / 2.0
+        # 4. Forward Pass Único (El modelo es ciego a lo que está apagado)
+        z_all = model(merged_img_dict, batch_positions=merged_bp, return_projected=True)
         
-        loss_z1_zprime = (self.infonce(z_1, z_prime) + self.infonce(z_prime, z_1)) / 2.0
-        loss_z2_zprime = (self.infonce(z_2, z_prime) + self.infonce(z_prime, z_2)) / 2.0
-        
-        loss_z1_zdprime = (self.infonce(z_1, z_dprime) + self.infonce(z_dprime, z_1)) / 2.0
-        loss_z2_zdprime = (self.infonce(z_2, z_dprime) + self.infonce(z_dprime, z_2)) / 2.0
+        # 5. Normalización L2
+        z_all = F.normalize(z_all, p=2, dim=-1)
 
-        total_loss = loss_z_z + loss_z1_zprime + loss_z2_zprime + loss_z1_zdprime + loss_z2_zdprime
+        # 6. SEPARAR LOCALMENTE (Para no mezclar las memorias de las GPUs)
+        chunk_size_local = z_all.shape[0] // 6
+        z1_opt_local, z1_sar_local, z1_proto_local, z2_opt_local, z2_sar_local, z2_proto_local = torch.split(z_all, chunk_size_local, dim=0)
+
+        # 7. SINCRONIZACIÓN DDP AISLADA (El paso clave)
+        z1_opt = all_gather_with_grad(z1_opt_local)
+        z1_sar = all_gather_with_grad(z1_sar_local)
+        z1_proto = all_gather_with_grad(z1_proto_local)
+        z2_opt = all_gather_with_grad(z2_opt_local)
+        z2_sar = all_gather_with_grad(z2_sar_local)
+        z2_proto = all_gather_with_grad(z2_proto_local)
+
+        # 8. Alineación InfoNCE idéntica a CoMM
+        loss_opt = (self.infonce(z1_opt, z2_proto) + self.infonce(z2_opt, z1_proto)) / 2.0
+        loss_sar = (self.infonce(z1_sar, z2_proto) + self.infonce(z2_sar, z1_proto)) / 2.0
+        loss_fusion = self.infonce(z1_proto, z2_proto) # Simétrico
+
+        total_loss = loss_opt + loss_sar + loss_fusion
         
         return {
             "loss": total_loss, 
-            "loss_fusion": loss_z_z, 
-            "loss_z1_align": loss_z1_zprime + loss_z1_zdprime,
-            "loss_z2_align": loss_z2_zprime + loss_z2_zdprime
+            "loss_fusion": loss_fusion, 
+            "loss_z1_align": loss_opt,
+            "loss_z2_align": loss_sar
         }
 
     def __str__(self):
@@ -810,14 +817,13 @@ class UnifiedCoMMLoss(nn.Module):
 
 
 class LeJEPA_CoMMLoss(nn.Module):
-    def __init__(self, use_rbf=True, sigma_max=2.0, sigma_min=0.5, sigreg_weight=0.05, patch_weight=0.5):
+    def __init__(self, use_rbf=True, sigma_max=2.0, sigma_min=0.5, sigreg_weight=0.05):
         super().__init__()
         self.use_rbf = use_rbf
         self.sigma_max = sigma_max
         self.sigma_min = sigma_min
         self.sigma = sigma_max
         self.sigreg_weight = sigreg_weight
-        self.patch_weight = patch_weight
         
         self.sigreg = SlicingUnivariateTest(EppsPulley(n_points=17), num_slices=4096)
 
@@ -846,65 +852,63 @@ class LeJEPA_CoMMLoss(nn.Module):
         return out
 
     def forward(self, model, orig_img_dict, aug1_img_dict, aug2_img_dict, batch_positions=None):
-        first_k = list(orig_img_dict.keys())[0]
-        B = orig_img_dict[first_k].shape[0]
-        device = orig_img_dict[first_k].device
+        def isolate_modality(img_dict, target_mod=None):
+            out = {}
+            for k, v in img_dict.items():
+                if target_mod is None or k == target_mod:
+                    out[k] = v
+                else:
+                    out[k] = torch.zeros_like(v)
+            return out
 
-        merged_img_dict = self._concat_dicts([orig_img_dict, orig_img_dict, aug1_img_dict, aug2_img_dict])
+        z1_opt_dict = isolate_modality(aug1_img_dict, "optical")
+        z1_sar_dict = isolate_modality(aug1_img_dict, "sar")
+        z1_fus_dict = isolate_modality(aug1_img_dict, None)
+
+        z2_opt_dict = isolate_modality(aug2_img_dict, "optical")
+        z2_sar_dict = isolate_modality(aug2_img_dict, "sar")
+        z2_fus_dict = isolate_modality(aug2_img_dict, None)
+
+        merged_img_dict = self._concat_dicts([
+            z1_opt_dict, z1_sar_dict, z1_fus_dict,
+            z2_opt_dict, z2_sar_dict, z2_fus_dict
+        ])
         
         merged_bp = None
         if batch_positions is not None:
-            merged_bp = self._concat_dicts([batch_positions, batch_positions, batch_positions, batch_positions])
+            merged_bp = self._concat_dicts([batch_positions] * 6)
 
-        # 1.0: Opt, 0.0: SAR, 0.5: Fusion
-        force_alpha = torch.cat([
-            torch.full((B, 1, 1), 1.0, device=device),
-            torch.full((B, 1, 1), 0.0, device=device),
-            torch.full((B, 1, 1), 0.5, device=device),
-            torch.full((B, 1, 1), 0.5, device=device),
-        ], dim=0)
-
-        # return_projected=False -> [4B, D, H, W]
-        out_spatial_list = model(merged_img_dict, batch_positions=merged_bp, force_alpha=force_alpha, return_projected=False)
-        
+        # [6B, D, H, W]
+        out_spatial_list = model(merged_img_dict, batch_positions=merged_bp, return_projected=False)
         z_all_spatial = out_spatial_list[-1] 
         
-        # [4B, N, D]
-        z_all_patches = z_all_spatial.flatten(2).transpose(1, 2)
-        z_1, z_2, z_p, z_dp = torch.split(z_all_patches, B, dim=0)
-        
-        # [4B, D]
+        # [6B, D]
         z_all_bar = z_all_spatial.mean(dim=(2, 3))
-        z_1_bar, z_2_bar, z_p_bar, z_dp_bar = torch.split(z_all_bar, B, dim=0)
 
-        # --- SINCRONIZACIÓN DDP ---
-        z_1 = all_gather_with_grad(z_1)
-        z_2 = all_gather_with_grad(z_2)
-        z_p = all_gather_with_grad(z_p)
-        z_dp = all_gather_with_grad(z_dp)
+        chunk_size_local = z_all_bar.shape[0] // 6
+        (z1_opt_local, z1_sar_local, z1_proto_local, 
+         z2_opt_local, z2_sar_local, z2_proto_local) = torch.split(z_all_bar, chunk_size_local, dim=0)
 
-        z_1_bar = all_gather_with_grad(z_1_bar)
-        z_2_bar = all_gather_with_grad(z_2_bar)
-        z_p_bar = all_gather_with_grad(z_p_bar)
-        z_dp_bar = all_gather_with_grad(z_dp_bar)
-        # ---------------------------
-
-        loss_patch = self.k_sim(z_1, z_2)
+        z1_opt = all_gather_with_grad(z1_opt_local)
+        z1_sar = all_gather_with_grad(z1_sar_local)
+        z1_proto = all_gather_with_grad(z1_proto_local)
+        z2_opt = all_gather_with_grad(z2_opt_local)
+        z2_sar = all_gather_with_grad(z2_sar_local)
+        z2_proto = all_gather_with_grad(z2_proto_local)
         
-        loss_cross = 0.5 * (
-            self.k_sim(z_1_bar, z_p_bar) + self.k_sim(z_1_bar, z_dp_bar) +
-            self.k_sim(z_2_bar, z_p_bar) + self.k_sim(z_2_bar, z_dp_bar)
-        )
+        loss_opt = (self.k_sim(z1_opt, z2_proto) + self.k_sim(z2_opt, z1_proto)) / 2.0
+        loss_sar = (self.k_sim(z1_sar, z2_proto) + self.k_sim(z2_sar, z1_proto)) / 2.0
+        loss_cross = loss_opt + loss_sar
         
-        loss_synergy = self.k_sim(z_p_bar, z_dp_bar)
+        loss_synergy = self.k_sim(z1_proto, z2_proto)
         
-        loss_sigreg = self.sigreg(z_all_bar)
+        z_all_bar_global = torch.cat([z1_opt, z1_sar, z1_proto, z2_opt, z2_sar, z2_proto], dim=0)
+        loss_sigreg = self.sigreg(z_all_bar_global)
         
-        total_loss = (self.patch_weight * loss_patch) + loss_cross + loss_synergy + (self.sigreg_weight * loss_sigreg)
+        total_loss = loss_cross + loss_synergy + (self.sigreg_weight * loss_sigreg)
         
         return {
             "loss": total_loss, 
-            "loss_patch": loss_patch, 
             "loss_cross": loss_cross,
             "loss_synergy": loss_synergy,
             "loss_sigreg": loss_sigreg

@@ -143,7 +143,6 @@ class UnifiedMMViT(Encoder):
         self.topology = [output_dim for _ in self.output_layers]
         
         self.tokenizers = nn.ModuleDict()
-        self.modality_embeds = nn.ParameterDict()
         self.tmaps = nn.ModuleDict()
         
         for mod, bands in input_bands.items():
@@ -156,7 +155,6 @@ class UnifiedMMViT(Encoder):
                 depth=1,
                 num_heads=4
             )
-            self.modality_embeds[mod] = nn.Parameter(torch.zeros(1, 1, embed_dim))
             self.tmaps[mod] = LTAE2d(
             in_channels=self.topology[-1],
             d_model=256,
@@ -166,6 +164,12 @@ class UnifiedMMViT(Encoder):
             d_k=4,
             positional_encoding=positional_encoding,
             layer_norm=True
+        )
+
+        self.fusion_proj = nn.Sequential(
+            nn.Linear(embed_dim * len(self.modalities), embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU()
         )
 
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, embed_dim))
@@ -180,13 +184,13 @@ class UnifiedMMViT(Encoder):
         self.projector = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(1),
-            nn.Linear(self.topology[-1], 2048),
-            nn.LayerNorm(normalized_shape=2048),
-            nn.GELU(),
-            nn.Linear(2048, 2048),
-            nn.LayerNorm(normalized_shape=2048),
-            nn.GELU(),
-            nn.Linear(2048, projection_dim)
+            nn.Linear(self.topology[-1], embed_dim),
+            nn.SyncBatchNorm(embed_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(embed_dim, embed_dim),
+            nn.SyncBatchNorm(embed_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(embed_dim, projection_dim)
         )
 
         self.modalities_finetune = modalities_finetune if modalities_finetune is not None else {}
@@ -195,15 +199,12 @@ class UnifiedMMViT(Encoder):
 
     def _init_weights(self):
         nn.init.trunc_normal_(self.pos_embed, std=.02)
-        for mod in self.modalities:
-            nn.init.trunc_normal_(self.modality_embeds[mod], std=.02)
 
     def _freeze_modalities(self):
         for mod in self.modalities:
             if not self.modalities_finetune.get(mod, True):
                 for param in self.tokenizers[mod].parameters():
                     param.requires_grad = False
-                self.modality_embeds[mod].requires_grad = False
                 for param in self.tmaps[mod].parameters():
                     param.requires_grad = False
 
@@ -243,35 +244,17 @@ class UnifiedMMViT(Encoder):
             
             toks_spatial = self.tokenizers[mod](mod_x)
             H_p, W_p = toks_spatial.shape[-2:]
-            
             toks_spatial = toks_spatial.view(B, T, self.embed_dim, H_p, W_p).permute(0, 2, 1, 3, 4)
-            
-            # 2. Pasamos el diccionario mod_bp completo al LTAE2d
             temporal_fused, _ = self.tmaps[mod](toks_spatial, mod_bp)
             
             toks_flat = temporal_fused.flatten(2).transpose(1, 2)
-            toks_flat = toks_flat + self.pos_embed + self.modality_embeds[mod]
+            
+            # Fiel a CoMM: Solo se suma la codificación posicional espacial, NO modality_embeds
+            toks_flat = toks_flat + self.pos_embed 
             processed_tokens[mod] = toks_flat
 
-        # Manejo matemático de la Modalidad: fuerza a Óptico(1.0), SAR(0.0), Fusión(0.5) o Estocástico
-        fused_tokens = torch.zeros_like(processed_tokens[self.modalities[0]])
-        
-        if force_alpha is not None:
-            fused_tokens = force_alpha * processed_tokens["optical"] + (1 - force_alpha) * processed_tokens["sar"]
-        elif self.training:
-            B = fused_tokens.shape[0]
-            rand_val = torch.rand(B, 1, 1, device=fused_tokens.device)
-            alpha = torch.zeros_like(rand_val)
-            
-            alpha[rand_val < 0.33] = 1.0 
-            alpha[(rand_val >= 0.33) & (rand_val < 0.66)] = 0.0 
-            
-            mix_mask = rand_val >= 0.66
-            alpha[mix_mask] = torch.rand(mix_mask.sum(), device=fused_tokens.device)
-            
-            fused_tokens = alpha * processed_tokens["optical"] + (1 - alpha) * processed_tokens["sar"]
-        else:
-            fused_tokens = sum(processed_tokens.values()) / len(self.modalities)
+        concat_tokens = torch.cat([processed_tokens["optical"], processed_tokens["sar"]], dim=-1)
+        fused_tokens = self.fusion_proj(concat_tokens)
 
         out = fused_tokens
         features = []

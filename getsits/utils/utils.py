@@ -198,7 +198,7 @@ class LeJEPATransform(torch.nn.Module):
         super().__init__()
         self.degrees = degrees
         self.transforms = v2.Compose([
-            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.3, 1.0)),
+            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.3, 0.7)),
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomVerticalFlip(p=0.5),
             v2.RandomApply([v2.GaussianBlur(kernel_size=(11,11))], p=0.5)

@@ -2,5 +2,4 @@ _target_: getsits.utils.losses.LeJEPA_CoMMLoss
 use_rbf: True
 sigma_max: 2.0
 sigma_min: 0.5
-sigreg_weight: 0.2
-patch_weight: 0.1
+sigreg_weight: 0.05

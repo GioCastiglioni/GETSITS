@@ -221,25 +221,16 @@ class Trainer:
             else:
                 anysat_flag = (str(self.criterion) == "AnySatJEPA")
                 if str(self.criterion) == "UnifiedCoMMLoss":
-                    # 1. Llevar el diccionario de imágenes al dispositivo
                     image_dict = {k: v.to(self.device) for k, v in data["image"].items()}
-                    
-                    # 2. Llevar metadata al dispositivo (doy, etc.)
-                    metadata = None
-                    if "metadata" in data and data["metadata"] is not None:
-                        metadata = dict_to_device(data.get("metadata", {}), self.device)
+                    metadata = dict_to_device(data.get("metadata", {}), self.device) if "metadata" in data else None
 
-                    # 3. Generar las vistas fuertemente aumentadas (Z' y Z'')
-                    # temporal_transform maneja la consistencia espacio-temporal y multimodal automáticamente
+                    aug_orig = self.temporal_transform(image_dict) 
                     aug1_img_dict = self.temporal_transform(image_dict)
                     aug2_img_dict = self.temporal_transform(image_dict)
                     
-                    # 4. Calcular la pérdida CoMM Unificada
-                    # Pasamos las imágenes limpias (para prototipos unimodales puros Z_1, Z_2)
-                    # Y las imágenes aumentadas (para los prototipos de fusión Z', Z'')
                     outputs = self.criterion(
                         self.model,
-                        orig_img_dict=image_dict, 
+                        orig_img_dict=aug_orig,
                         aug1_img_dict=aug1_img_dict, 
                         aug2_img_dict=aug2_img_dict, 
                         batch_positions=metadata
@@ -283,31 +274,52 @@ class Trainer:
             if (batch_idx + 1) % self.log_interval == 0:
                 self.log(batch_idx + 1, epoch)
 
+            if str(self.criterion) in ["UnifiedCoMMLoss", "LeJEPA_CoMMLoss"] and hasattr(self, "training_stats"):
+                keys_to_log = []
+                if str(self.criterion) == "UnifiedCoMMLoss":
+                    keys_to_log = ["loss_fusion", "loss_z1_align", "loss_z2_align"]
+                elif str(self.criterion) == "LeJEPA_CoMMLoss":
+                    keys_to_log = ["loss_cross", "loss_synergy", "loss_sigreg"]
+                
+                for k in keys_to_log:
+                    if k not in self.training_stats:
+                        from getsits.utils.logger import AverageMeter
+                        self.training_stats[k] = AverageMeter()
+                    self.training_stats[k].update(outputs[k].item())
+                    
+                if str(self.criterion) == "LeJEPA_CoMMLoss" and hasattr(self.criterion, 'sigma') and getattr(self.criterion, 'use_rbf', False):
+                    if "kernel_sigma" not in self.training_stats:
+                        from getsits.utils.logger import AverageMeter
+                        self.training_stats["kernel_sigma"] = AverageMeter()
+                    self.training_stats["kernel_sigma"].update(self.criterion.sigma)
+
             self.lr_scheduler.step()
 
             if self.use_wandb and self.rank == 0:
-                self.wandb.log(
-                    {
-                        "train_loss": loss.item(),
-                        "train_inv": inv,
-                        "train_sigreg": sigreg,
-                        "learning_rate": self.optimizer.param_groups[0]["lr"],
-                        "epoch": epoch,
-                        **{
-                            f"train_{k}": v.avg
-                            for k, v in self.training_metrics.items()
-                        },
-                    } if str(self.criterion) == "LeJEPA" else {
-                        "train_loss": loss.item(),
-                        "learning_rate": self.optimizer.param_groups[0]["lr"],
-                        "epoch": epoch,
-                        **{
-                            f"train_{k}": v.avg
-                            for k, v in self.training_metrics.items()
-                        }, 
+                log_dict = {
+                    "train_loss": loss.item(),
+                    "learning_rate": self.optimizer.param_groups[0]["lr"],
+                    "epoch": epoch,
+                    **{
+                        f"train_{k}": v.val
+                        for k, v in self.training_metrics.items()
                     },
-                    step=epoch * len(self.train_loader) + batch_idx,
-                )
+                }
+
+                if str(self.criterion) == "LeJEPA":
+                    log_dict.update({"train_inv": inv, "train_sigreg": sigreg})
+                elif str(self.criterion) == "UnifiedCoMMLoss":
+                    log_dict.update({
+                        f"train_{k}": self.training_stats[k].val 
+                        for k in ["loss_fusion", "loss_z1_align", "loss_z2_align"] if k in self.training_stats
+                    })
+                elif str(self.criterion) == "LeJEPA_CoMMLoss":
+                    log_dict.update({
+                        f"train_{k}": self.training_stats[k].val  
+                        for k in ["loss_cross", "loss_synergy", "loss_sigreg", "kernel_sigma"] if k in self.training_stats
+                    })
+
+                self.wandb.log(log_dict, step=epoch * len(self.train_loader) + batch_idx)
 
             if anysat_flag: self.criterion.module.update_teacher_ema(self.model, momentum=0.996)
 
@@ -435,19 +447,19 @@ class Trainer:
                 self.wandb.log(
                     {
                         "val_loss": final_val_loss,
-                        "val_fusion_loss": final_fusion,
-                        "val_z1_align": final_z1_align,
-                        "val_z2_align": final_z2_align,
+                        "val_loss_fusion": final_fusion,
+                        "val_loss_z1_align": final_z1_align,
+                        "val_loss_z2_align": final_z2_align,
                         "epoch": epoch
                     },
                     step = epoch * len(self.train_loader)
                 )
                 
             return final_val_loss
+
         elif str(self.criterion) == "LeJEPA_CoMMLoss":
 
             total_epoch_loss = 0.0
-            total_patch = 0.0
             total_cross = 0.0
             total_synergy = 0.0
             total_sigreg = 0.0
@@ -456,7 +468,7 @@ class Trainer:
             for batch_idx, data in enumerate(tqdm(self.val_loader, desc=f"Evaluating Epoch {epoch}", disable=self.rank != 0)):
 
                 image_dict = {k: v.to(self.device) for k, v in data["image"].items()}
-                metadata = dict_to_device(data.get("metadata", {}), self.device)
+                metadata = dict_to_device(data.get("metadata", {}), self.device) if "metadata" in data else None
 
                 self.training_stats["data_time"].update(time.time() - end_time)
 
@@ -473,7 +485,6 @@ class Trainer:
                     )
                     
                 total_epoch_loss += outputs["loss"].item()
-                total_patch += outputs["loss_patch"].item()
                 total_cross += outputs["loss_cross"].item()
                 total_synergy += outputs["loss_synergy"].item()
                 total_sigreg += outputs["loss_sigreg"].item()
@@ -481,31 +492,26 @@ class Trainer:
                 torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
                 end_time = time.time()
 
-            # Promediar sobre el DataLoader
             final_loss = total_epoch_loss / len(self.val_loader)
-            final_patch = total_patch / len(self.val_loader)
             final_cross = total_cross / len(self.val_loader)
             final_synergy = total_synergy / len(self.val_loader)
             final_sigreg = total_sigreg / len(self.val_loader)
 
-            # Sincronización en sistemas distribuidos
             if torch.distributed.is_available() and torch.distributed.is_initialized():
                 metrics_tensor = torch.tensor(
-                    [final_loss, final_patch, final_cross, final_synergy, final_sigreg], 
+                    [final_loss, final_cross, final_synergy, final_sigreg], 
                     device=self.device
                 )
                 torch.distributed.all_reduce(metrics_tensor, op=torch.distributed.ReduceOp.AVG)
-                final_loss, final_patch, final_cross, final_synergy, final_sigreg = metrics_tensor.tolist()
+                final_loss, final_cross, final_synergy, final_sigreg = metrics_tensor.tolist()
 
-            # Reporte a Weights & Biases
             if self.use_wandb and self.rank == 0:
                 self.wandb.log(
                     {
                         "val_loss": final_loss,
-                        "val_patch_redundancy": final_patch,
-                        "val_cross_uniqueness": final_cross,
-                        "val_synergy": final_synergy,
-                        "val_sigreg": final_sigreg,
+                        "val_loss_cross": final_cross,
+                        "val_loss_synergy": final_synergy,
+                        "val_loss_sigreg": final_sigreg,
                         "epoch": epoch
                     },
                     step = epoch * len(self.train_loader)

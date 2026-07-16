@@ -9,7 +9,7 @@ input_size: 224
 multi_temporal: True
 multi_temporal_output: False
 pyramid_output: False
-projection_dim: 256
+projection_dim: 64
 positional_encoding: "geotime"
 modalities_finetune:
   optical: True
