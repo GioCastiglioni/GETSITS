@@ -56,7 +56,8 @@ class Evaluator:
             exp_dir: str | Path,
             device: torch.device,
             use_wandb: bool = False,
-            dataset_name: str = 'pastis'
+            dataset_name: str = 'pastis',
+            active_modality: str = "optical"
     ) -> None:
         self.rank = int(os.environ["RANK"])
         self.val_loader = val_loader
@@ -70,6 +71,7 @@ class Evaluator:
         self.num_classes = len(self.classes)
         self.max_name_len = max([len(name) for name in self.classes])
         self.dataset_name = dataset_name
+        self.active_modality = active_modality
 
         self.use_wandb = use_wandb
 
@@ -122,7 +124,8 @@ class SegEvaluator(Evaluator):
             exp_dir: str | Path,
             device: torch.device,
             use_wandb: bool = False,
-            dataset_name: str = ""
+            dataset_name: str = "",
+            active_modality: str = "optical"
     ):
         super().__init__(val_loader, criterion, distribution, exp_dir, device, use_wandb, dataset_name)
 
@@ -133,12 +136,14 @@ class SegEvaluator(Evaluator):
         if model_ckpt_path is not None:
             model_dict = torch.load(model_ckpt_path, map_location=self.device, weights_only=False)
             model_name = os.path.basename(model_ckpt_path).split(".")[0]
-            if "model" in model_dict:
-                model.module.load_state_dict(model_dict["model"])
-            else:
-                model.module.load_state_dict(model_dict)
+            
+            state_dict = model_dict.get("model", model_dict)
+            filtered_dict = {k: v for k, v in state_dict.items() if "projector" not in k}
+            
+            model.module.load_state_dict(filtered_dict, strict=False)
 
-            self.logger.info(f"Loaded {model_name} for evaluation")
+            self.logger.info(f"Loaded {model_name} for evaluation (Projection head discarded)")
+            
         model.eval()
 
         tag = f"Evaluating {model_name} on {self.split} set"
@@ -149,14 +154,29 @@ class SegEvaluator(Evaluator):
         for batch_idx, data in enumerate(tqdm(self.val_loader, desc=tag)):
             data["metadata"] = dict_to_device(data.get("metadata", {}), self.device)
             image, target = data["image"], data["target"]
+            if isinstance(image, dict):
+                image_input = {k: v.to(self.device) for k, v in image.items()}
+                if getattr(self, "active_modality", "all") == "optical" and "sar" in image_input:
+                    image_input["sar"] = torch.zeros_like(image_input["sar"])
+                elif getattr(self, "active_modality", "all") == "sar" and "optical" in image_input:
+                    image_input["optical"] = torch.zeros_like(image_input["optical"])
+            else:
+                image_input = image.to(self.device)
                 
-            image_dict = {k: v.to(self.device) for k, v in image.items()}
             target = target.to(self.device)
             
             # [B, num_classes, H, W]
-            logits = model(image_dict, batch_positions=data["metadata"])
+            logits = model(image_input, batch_positions=data["metadata"])
                 
-            loss_tensor = self.criterion(logits, target)
+            if model.module.segmentation:
+                valid_pixels = (target != self.ignore_index)
+                if valid_pixels.any(): 
+                    loss_tensor = self.criterion(logits, target)
+                else: 
+                    loss_tensor = logits.sum() * 0.0
+            else:
+                loss_tensor = self.criterion(logits, target.float() if logits.dim() == 2 else target)
+                
             torch.distributed.all_reduce(loss_tensor, op=torch.distributed.ReduceOp.SUM)
             total_loss += loss_tensor.item()
 
@@ -188,7 +208,6 @@ class SegEvaluator(Evaluator):
                 confusion_matrix[2] += fn
 
                 self.is_multilabel = True
-            
             
             torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
             

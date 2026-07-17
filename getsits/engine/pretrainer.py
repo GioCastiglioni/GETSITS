@@ -156,7 +156,8 @@ class Trainer:
 
             self.logger.info("============ Starting epoch %i ... ============" % epoch)
             self.t = time.time()
-            self.train_loader.sampler.set_epoch(epoch)
+            if hasattr(self.train_loader.sampler, "set_epoch"):
+                self.train_loader.sampler.set_epoch(epoch)
             self.train_one_epoch(epoch)
             if epoch % self.ckpt_interval == 0 and epoch != self.start_epoch: self.save_model(epoch)
             torch.cuda.empty_cache()

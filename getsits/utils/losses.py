@@ -780,17 +780,13 @@ class UnifiedCoMMLoss(nn.Module):
         if batch_positions is not None:
             merged_bp = self._concat_dicts([batch_positions] * 6)
 
-        # 4. Forward Pass Único (El modelo es ciego a lo que está apagado)
         z_all = model(merged_img_dict, batch_positions=merged_bp, return_projected=True)
         
-        # 5. Normalización L2
         z_all = F.normalize(z_all, p=2, dim=-1)
 
-        # 6. SEPARAR LOCALMENTE (Para no mezclar las memorias de las GPUs)
         chunk_size_local = z_all.shape[0] // 6
         z1_opt_local, z1_sar_local, z1_proto_local, z2_opt_local, z2_sar_local, z2_proto_local = torch.split(z_all, chunk_size_local, dim=0)
 
-        # 7. SINCRONIZACIÓN DDP AISLADA (El paso clave)
         z1_opt = all_gather_with_grad(z1_opt_local)
         z1_sar = all_gather_with_grad(z1_sar_local)
         z1_proto = all_gather_with_grad(z1_proto_local)
@@ -798,12 +794,11 @@ class UnifiedCoMMLoss(nn.Module):
         z2_sar = all_gather_with_grad(z2_sar_local)
         z2_proto = all_gather_with_grad(z2_proto_local)
 
-        # 8. Alineación InfoNCE idéntica a CoMM
         loss_opt = (self.infonce(z1_opt, z2_proto) + self.infonce(z2_opt, z1_proto)) / 2.0
         loss_sar = (self.infonce(z1_sar, z2_proto) + self.infonce(z2_sar, z1_proto)) / 2.0
-        loss_fusion = self.infonce(z1_proto, z2_proto) # Simétrico
+        loss_fusion = self.infonce(z1_proto, z2_proto) 
 
-        total_loss = loss_opt + loss_sar + loss_fusion
+        total_loss = (loss_opt + loss_sar + loss_fusion) / 3.0
         
         return {
             "loss": total_loss, 

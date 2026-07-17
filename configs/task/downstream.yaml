@@ -9,6 +9,7 @@ trainer:
   exp_dir: null
   device: null
   criterion: null
+  active_modality: "optical"
 
   # params to adapt
   n_epochs: 80
@@ -27,5 +28,6 @@ evaluator:
   exp_dir: null
   device: null
   use_wandb: ${use_wandb}
+  active_modality: "all"
 
 

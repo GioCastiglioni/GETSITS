@@ -15,6 +15,8 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import IterableDataset
+import webdataset as wds
 
 from getsits.datasets.base import GeoFMDataset, GeoFMSubset, RawGeoFMDataset
 from getsits.decoders.base import Decoder
@@ -172,6 +174,11 @@ def main(cfg: DictConfig) -> None:
             cfg.decoder,
             encoder=encoder,
         )
+    
+    if hasattr(decoder, "no_tmap") and not getattr(encoder, "multi_temporal_output", True):
+        decoder.no_tmap = True
+        logger.info("Forced decoder.no_tmap=True due to single-temporal encoder output.")
+
     decoder = torch.nn.SyncBatchNorm.convert_sync_batchnorm(decoder)
     decoder.to(device)
 
@@ -296,42 +303,72 @@ def main(cfg: DictConfig) -> None:
             )
             raw_val_dataset = GeoFMSubset(raw_val_dataset, indices)
 
-        train_dataset = GeoFMDataset(
-            raw_train_dataset, train_preprocessor, cfg.data_replicate
-        )
-        val_dataset = GeoFMDataset(
-            raw_val_dataset, val_preprocessor, cfg.data_replicate
-        )
+        if isinstance(raw_train_dataset, IterableDataset):
+            if train_preprocessor is not None:
+                # Añadimos el preprocesador directamente al flujo infinito de WebDataset
+                raw_train_dataset.pipeline.append(wds.map(train_preprocessor))
+            train_dataset = raw_train_dataset
+            train_len = "Streaming (Infinito)"
+        else:
+            # Comportamiento original para datasets locales
+            train_dataset = GeoFMDataset(
+                raw_train_dataset, 
+                preprocessor=train_preprocessor, 
+                replicate=cfg.get("replicate", 1)
+            )
+            train_len = len(train_dataset)
+
+        # --- PREPARACIÓN DEL VAL DATASET ---
+        if isinstance(raw_val_dataset, IterableDataset):
+            if val_preprocessor is not None:
+                raw_val_dataset.pipeline.append(wds.map(val_preprocessor))
+            val_dataset = raw_val_dataset
+            val_len = "Streaming (Infinito)"
+        else:
+            # Comportamiento original para datasets locales
+            val_dataset = GeoFMDataset(
+                raw_val_dataset, 
+                preprocessor=val_preprocessor, 
+                replicate=1
+            )
+            val_len = len(val_dataset)
 
         logger.info("Built {} dataset.".format(cfg.dataset.dataset_name))
 
-        logger.info(
-            f"Total number of train patches: {len(train_dataset)}\n"
-            f"Total number of validation patches: {len(val_dataset)}\n"
-        )
+        logger.info(f"Total number of train patches: {train_len}")
+        logger.info(f"Total number of val patches: {val_len}")
+
+        is_iterable_train = isinstance(train_dataset, IterableDataset)
+        is_iterable_val = isinstance(val_dataset, IterableDataset)
+
+        train_sampler = None if is_iterable_train else DistributedSampler(train_dataset, drop_last=True, shuffle=True)
+        val_sampler = None if is_iterable_val else DistributedSampler(val_dataset, drop_last=True, shuffle=True)
 
         train_loader = DataLoader(
             train_dataset,
-            sampler=DistributedSampler(train_dataset, drop_last=True, shuffle=True),
+            sampler=train_sampler,
+            shuffle=False if (is_iterable_train or train_sampler is not None) else True,
             batch_size=cfg.batch_size,
             num_workers=cfg.num_workers,
             pin_memory=True,
-            persistent_workers=False,
+            persistent_workers=True,
+            prefetch_factor=4,
             worker_init_fn=seed_worker,
             generator=get_generator(cfg.seed),
-            drop_last=True,
+            drop_last=False if is_iterable_train else True, 
             collate_fn=collate_fn,
         )
 
         val_loader = DataLoader(
             val_dataset,
-            sampler=DistributedSampler(val_dataset, drop_last=True, shuffle=True),
+            sampler=val_sampler,
+            shuffle=False,
             batch_size=cfg.test_batch_size,
             num_workers=cfg.test_num_workers,
             pin_memory=True,
-            persistent_workers=False,
+            persistent_workers=True,
             worker_init_fn=seed_worker,
-            drop_last=True,
+            drop_last=False if is_iterable_val else True,
             collate_fn=collate_fn,
         )
         

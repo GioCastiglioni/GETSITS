@@ -10,48 +10,55 @@ from getsits.encoders.ltae import LTAE2d
 class DenseConvStem(nn.Module):
     def __init__(self, in_channels: int, embed_dim: int, patch_size: int = 16):
         super().__init__()
-        
+        #224
         self.conv_i = nn.Sequential(
-            nn.Conv2d(in_channels, 128, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.Conv2d(in_channels, 128, kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(128),
             nn.GELU()
-        )
+        ) #112
         self.conv_ii = nn.Sequential(
-            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.Conv2d(in_channels, 128, kernel_size=7, stride=2, padding=3, bias=False),
             nn.BatchNorm2d(128),
             nn.GELU()
-        )
+        ) #112
         self.skip1 = nn.Sequential(
             nn.Conv2d(256, 128, kernel_size=1, stride=1, padding=0, bias=False),
             nn.BatchNorm2d(128),
-            nn.GELU()
-        )
+            nn.GELU(),
+            nn.AvgPool2d(kernel_size=2, stride=2)
+        ) # 56
+
         self.conv_iii = nn.Sequential(
-            nn.Conv2d(128, 128, kernel_size=5, stride=1, padding=2, bias=False),
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(128),
             nn.GELU()
-        )
+        ) #28
+        self.conv_iv = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(128),
+            nn.GELU()
+        ) #28
         self.skip2 = nn.Sequential(
             nn.Conv2d(256, 128, kernel_size=1, stride=1, padding=0, bias=False),
             nn.BatchNorm2d(128),
-            nn.GELU()
-        )
-        self.patching = nn.Conv2d(128, embed_dim, kernel_size=patch_size, stride=patch_size)
+            nn.GELU(),
+            nn.AvgPool2d(kernel_size=2, stride=2)
+        ) #14
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         def _inner_forward(x_in):
             out_i = self.conv_i(x_in)
-            out_ii = self.conv_ii(out_i)
+            out_ii = self.conv_ii(x_in)
             
             cat_1 = torch.cat([out_i, out_ii], dim=1)
             out_skip1 = self.skip1(cat_1)
             
             out_iii = self.conv_iii(out_skip1)
+            out_iv = self.conv_iv(out_skip1)
             
-            cat_2 = torch.cat([out_skip1, out_iii], dim=1)
-            out_skip2 = self.skip2(cat_2)
+            cat_2 = torch.cat([out_iii, out_iv], dim=1)
             
-            return self.patching(out_skip2)
+            return self.skip2(cat_2)
             
         if self.training:
             return checkpoint(_inner_forward, x, use_reentrant=False)
@@ -105,6 +112,7 @@ class UnifiedMMViT(Encoder):
         input_bands: dict,
         output_layers: list,
         output_dim: list,
+        stem: str = "att",
         embed_dim: int = 384,
         patch_size: int = 16,
         depth: int = 12,
@@ -141,20 +149,21 @@ class UnifiedMMViT(Encoder):
         self.num_patches = (input_size // patch_size) ** 2
 
         self.topology = [output_dim for _ in self.output_layers]
+
+        self.stem = stem
         
         self.tokenizers = nn.ModuleDict()
         self.tmaps = nn.ModuleDict()
         
         for mod, bands in input_bands.items():
-            #self.tokenizers[mod] = DenseConvStem(len(bands), embed_dim, patch_size)
             self.tokenizers[mod] = AttentionStem(
                 in_channels=len(bands), 
                 embed_dim=embed_dim, 
                 patch_size=patch_size,
                 input_size=input_size,
-                depth=1,
+                depth=2,
                 num_heads=4
-            )
+            ) if self.stem == "att" else DenseConvStem(len(bands), embed_dim, patch_size)
             self.tmaps[mod] = LTAE2d(
             in_channels=self.topology[-1],
             d_model=256,
@@ -212,7 +221,8 @@ class UnifiedMMViT(Encoder):
         if not from_scratch:
             logger.info(f"Loading pre-trained weights from {self.encoder_weights}...")
             model_dict = torch.load(self.encoder_weights, map_location="cpu", weights_only=False)["model"]
-            self.load_state_dict(model_dict)
+            filtered_dict = {k: v for k, v in model_dict.items() if "projector" not in k}
+            missing, unexpected = self.load_state_dict(filtered_dict, strict=False)
             logger.info("Pre-trained weights loaded successfully.")
         else:pass
 
@@ -222,17 +232,13 @@ class UnifiedMMViT(Encoder):
         for mod in self.modalities:
             mod_x = x[mod]
             
-            # 1. Extraer los metadatos: combinando los globales (lat, lon) con los locales (doy, time)
             mod_bp = None
             if batch_positions is not None:
-                # Rescata todo lo que no sea un diccionario (ej. "lat", "lon")
                 mod_bp = {k: v for k, v in batch_positions.items() if not isinstance(v, dict)}
                 
-                # Suma los datos específicos de la modalidad (ej. "doy" de optical)
                 if mod in batch_positions and isinstance(batch_positions[mod], dict):
                     mod_bp.update(batch_positions[mod])
                     
-                # Si el dataset era antiguo y plano, usamos todo
                 if not mod_bp:
                     mod_bp = batch_positions
             
@@ -249,7 +255,6 @@ class UnifiedMMViT(Encoder):
             
             toks_flat = temporal_fused.flatten(2).transpose(1, 2)
             
-            # Fiel a CoMM: Solo se suma la codificación posicional espacial, NO modality_embeds
             toks_flat = toks_flat + self.pos_embed 
             processed_tokens[mod] = toks_flat
 

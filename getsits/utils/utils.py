@@ -194,44 +194,38 @@ class ConsistentTransform(torch.nn.Module):
         return noisy_img
 
 class LeJEPATransform(torch.nn.Module):
-    def __init__(self, h_w=128, degrees=30):
+    def __init__(self, h_w=224, degrees=30):
         super().__init__()
         self.degrees = degrees
-        self.transforms = v2.Compose([
-            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.3, 0.7)),
+        self.geometric_transforms = v2.Compose([
+            v2.RandomResizedCrop(size=(h_w, h_w), scale=(0.25, 0.6)),
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomVerticalFlip(p=0.5),
-            v2.RandomApply([v2.GaussianBlur(kernel_size=(11,11))], p=0.5)
-            ])
+        ])
+        
+        self.pixel_transforms = v2.Compose([
+            v2.RandomApply([v2.GaussianBlur(kernel_size=(11,11))], p=0.5),
+        ])
 
     def forward(self, sample):
-        if "mask" in sample:
-            sample = {"image": tv_tensors.Image(sample["image"]), "mask": tv_tensors.Mask(sample["mask"])}
-            sample = self.transforms(sample)
-            img, mask = torch.as_tensor(sample["image"]), torch.as_tensor(sample["mask"])
+        img = tv_tensors.Image(sample["image"])
+        mask = tv_tensors.Mask(sample["mask"]) if "mask" in sample else None
+        
+        if mask is not None:
+            combined = self.geometric_transforms({"image": img, "mask": mask})
+            img, mask = combined["image"], combined["mask"]
+        else:
+            img = self.geometric_transforms(img)
 
-            # Apply same rotation to both, with different interpolation modes
-            angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
-            img = self.rotate_with_reflection_padding(img, angle, is_mask=False)
+        angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
+        img = self.rotate_with_reflection_padding(img, angle, is_mask=False)
+        if mask is not None:
             mask = self.rotate_with_reflection_padding(mask, angle, is_mask=True)
 
-            img = self.add_gaussian_noise(img)
+        img = self.pixel_transforms(img)
+        img = self.add_gaussian_noise(img)
 
-            return {"image": img, "mask": mask}
-        else:
-            # Apply same rotation to both, with different interpolation modes
-            angle = torch.empty(1).uniform_(-self.degrees, self.degrees).item()
-            img=sample["image"]
-            img = self.rotate_with_reflection_padding(img, angle, is_mask=False)
-
-            sample = {"image": tv_tensors.Image(img)}
-            sample = self.transforms(sample)
-            img = torch.as_tensor(sample["image"])
-
-
-            img = self.add_gaussian_noise(img)
-
-            return {"image": img}
+        return {"image": img, "mask": mask} if mask is not None else {"image": img}
 
     def rotate_with_reflection_padding(self, img, angle, is_mask=False):
         """

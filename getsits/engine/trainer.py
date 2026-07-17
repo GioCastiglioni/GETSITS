@@ -47,6 +47,7 @@ class Trainer:
         eval_interval: int,
         log_interval: int,
         best_metric_key: str,
+        active_modality: str = "optical"
     ):
         """Initialize the Trainer.
 
@@ -86,6 +87,7 @@ class Trainer:
         self.eval_interval = eval_interval
         self.log_interval = log_interval
         self.best_metric_key = best_metric_key
+        self.active_modality = active_modality
 
         self.training_stats = {
             name: RunningAverageMeter(length=self.batch_per_epoch)
@@ -158,6 +160,11 @@ class Trainer:
             target = target.to(self.device)
 
             self.training_stats["data_time"].update(time.time() - end_time)
+
+            if self.active_modality == "optical" and "sar" in image:
+                image["sar"] = torch.zeros_like(image["sar"])
+            elif self.active_modality == "sar" and "optical" in image:
+                image["optical"] = torch.zeros_like(image["optical"])
 
             with torch.autocast("cuda", enabled=self.enable_mixed_precision, dtype=self.precision):
                 logits = self.model(image, batch_positions=data["metadata"])
@@ -454,6 +461,7 @@ class SegTrainer(Trainer):
         eval_interval: int,
         log_interval: int,
         best_metric_key: str,
+        active_modality: str = "optical"
     ):
         """Initialize the Trainer for segmentation task.
         Args:
