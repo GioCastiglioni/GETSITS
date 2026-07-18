@@ -355,7 +355,7 @@ def main(cfg: DictConfig) -> None:
             prefetch_factor=4,
             worker_init_fn=seed_worker,
             generator=get_generator(cfg.seed),
-            drop_last=False if is_iterable_train else True, 
+            drop_last=True, 
             collate_fn=collate_fn,
         )
 
@@ -368,7 +368,7 @@ def main(cfg: DictConfig) -> None:
             pin_memory=True,
             persistent_workers=True,
             worker_init_fn=seed_worker,
-            drop_last=False if is_iterable_val else True,
+            drop_last=True,
             collate_fn=collate_fn,
         )
         

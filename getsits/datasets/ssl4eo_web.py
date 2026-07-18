@@ -143,7 +143,7 @@ class SSL4EOWeb(RawGeoFMDataset, IterableDataset):
                 wds.split_by_node,
                 wds.split_by_worker,
                 multi_tarfile_samples if self.multi_modal else wds.tarfile_samples,
-                wds.shuffle(5000, initial=100)
+                wds.shuffle(1000, initial=100)
             ]
         else:
             shard_iterator = wds.SimpleShardList(urls)
