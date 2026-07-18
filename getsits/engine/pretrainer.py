@@ -120,6 +120,7 @@ class Trainer:
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.enable_mixed_precision)
 
         self.start_epoch = 0
+        self.global_step = 0
 
         if self.use_wandb:
             import wandb
@@ -319,8 +320,9 @@ class Trainer:
                         f"train_{k}": self.training_stats[k].val  
                         for k in ["loss_cross", "loss_synergy", "loss_sigreg", "kernel_sigma"] if k in self.training_stats
                     })
-
-                self.wandb.log(log_dict, step=epoch * len(self.train_loader) + batch_idx)
+                
+                self.wandb.log(log_dict, step=self.global_step)
+            self.global_step += 1
 
             if anysat_flag: self.criterion.module.update_teacher_ema(self.model, momentum=0.996)
 
@@ -388,7 +390,7 @@ class Trainer:
                         "val_sigreg": final_sigreg,
                         "epoch": epoch
                     },
-                    step = epoch * len(self.train_loader)
+                    step = self.global_step
                 )
                 
             return final_val_loss
@@ -453,7 +455,7 @@ class Trainer:
                         "val_loss_z2_align": final_z2_align,
                         "epoch": epoch
                     },
-                    step = epoch * len(self.train_loader)
+                    step = self.global_step
                 )
                 
             return final_val_loss
@@ -515,7 +517,7 @@ class Trainer:
                         "val_loss_sigreg": final_sigreg,
                         "epoch": epoch
                     },
-                    step = epoch * len(self.train_loader)
+                    step = self.global_step
                 )
                 
             return final_loss
@@ -549,6 +551,7 @@ class Trainer:
                         "val_loss": final_val_loss,
                         "epoch": epoch
                     },
+                    step = self.global_step
                 )
                 
             return final_val_loss
@@ -686,6 +689,8 @@ class Trainer:
         else:
             self.model.module.load_state_dict(model_dict)
             self.start_epoch = 0
+        
+        self.global_step = self.start_epoch * len(self.train_loader)
 
         self.logger.info(
             f"Loaded model from {resume_path}. Resume training from epoch {self.start_epoch}"

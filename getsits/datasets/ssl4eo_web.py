@@ -53,7 +53,7 @@ def multi_tarfile_samples(src_iter):
                             merged_dict[f"{modality_name}.{k}"] = v
                 yield merged_dict
         except Exception as e:
-            warnings.warn(f"Exception occurred while processing {src['url']}: {repr(e)}. Skipping shard")
+            #warnings.warn(f"Exception occurred while processing {src['url']}: {repr(e)}. Skipping shard")
             continue
 
 def zarr_metadata_decoding(sample):
