@@ -664,7 +664,7 @@ class Trainer:
             torch.distributed.barrier(device_ids=[torch.cuda.current_device()])
             return
         checkpoint = self.get_checkpoint(epoch) if checkpoint is None else checkpoint
-        suffix = "_best" if is_best else f"{epoch}_final" if is_final else f"{epoch}"
+        suffix = "_best" if is_best else f"_final" if is_final else f"{epoch}"
         checkpoint_path = os.path.join(self.exp_dir, f"checkpoint_{suffix}.pth")
         torch.save(checkpoint, checkpoint_path)
         self.logger.info(
