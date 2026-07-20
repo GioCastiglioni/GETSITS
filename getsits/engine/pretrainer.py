@@ -151,6 +151,7 @@ class Trainer:
                 self.logger.info(f"Evaluating epoch {epoch}...")
                 val_loss = self.evaluate(epoch)
                 self.save_best_checkpoint(val_loss, epoch)
+                self.save_model(epoch, is_final=True)       #Keep record of every last epoch, overwriting the previous
                 self.logger.info(f"Val loss: {val_loss}")
                 self.logger.info(f"Evaluation complete.")
                 torch.cuda.empty_cache()
