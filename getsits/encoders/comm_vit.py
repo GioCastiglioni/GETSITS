@@ -222,7 +222,13 @@ class AlexNetEncoder(AlexNet):
         self.global_pool = global_pool
         # Adapting the first layer to accommodate dynamic input channels (e.g. 12 for Optical, 2 for SAR)
         self.features[0] = nn.Conv2d(in_channels, 64, kernel_size=11, stride=4, padding=0)
-        self.classifier = nn.Linear(256 * 6 * 6, latent_dim)
+        
+        if self.global_pool == "avg":
+            self.classifier = nn.Linear(256 * 6 * 6, latent_dim)
+        else:
+            # Reemplazamos el clasificador de la clase padre (AlexNet) 
+            # por una capa sin parámetros para que DDP no se queje.
+            self.classifier = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.global_pool == "avg":
