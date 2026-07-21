@@ -749,6 +749,18 @@ class UnifiedCoMMLoss(nn.Module):
         log_sim_Z = F.log_softmax(sim_Z, dim=1)
         loss = - torch.diag(log_sim_Z).mean()
         return loss
+    
+    def _concat_bp(self, bp1, bp2):
+        if bp1 is None: return None
+        out = {}
+        for k in bp1.keys():
+            if isinstance(bp1[k], torch.Tensor):
+                out[k] = torch.cat([bp1[k], bp2[k]], dim=0)
+            elif isinstance(bp1[k], dict):
+                out[k] = self._concat_bp(bp1[k], bp2[k])
+            else:
+                out[k] = bp1[k]
+        return out
 
     def forward(self, model, orig_img_dict, aug1_img_dict, aug2_img_dict, batch_positions=None):
         modalities = list(aug1_img_dict.keys())
@@ -757,12 +769,8 @@ class UnifiedCoMMLoss(nn.Module):
         merged_img_dict = {}
         for k in modalities:
             merged_img_dict[k] = torch.cat([aug1_img_dict[k], aug2_img_dict[k]], dim=0)
-            
-        merged_bp = None
-        if batch_positions is not None:
-            merged_bp = {}
-            for k, v in batch_positions.items():
-                merged_bp[k] = torch.cat([v, v], dim=0) if isinstance(v, torch.Tensor) else v
+
+        merged_bp = self._concat_bp(batch_positions, batch_positions)
 
         z_merged_list = model(merged_img_dict, batch_positions=merged_bp, mask_modalities=all_masks, return_projected=True)
 
@@ -815,6 +823,18 @@ class LeJEPA_CoMMLoss(nn.Module):
         if self.use_rbf:
             self.sigma = self.sigma_min + 0.5 * (self.sigma_max - self.sigma_min) * (1 + math.cos(math.pi * current_epoch / total_epochs))
 
+    def _concat_bp(self, bp1, bp2):
+        if bp1 is None: return None
+        out = {}
+        for k in bp1.keys():
+            if isinstance(bp1[k], torch.Tensor):
+                out[k] = torch.cat([bp1[k], bp2[k]], dim=0)
+            elif isinstance(bp1[k], dict):
+                out[k] = self._concat_bp(bp1[k], bp2[k])
+            else:
+                out[k] = bp1[k]
+        return out
+
     def k_sim(self, x, y):
         mse = F.mse_loss(x, y, reduction='none').mean(dim=-1) 
         
@@ -840,11 +860,7 @@ class LeJEPA_CoMMLoss(nn.Module):
         for k in modalities:
             merged_img_dict[k] = torch.cat([aug1_img_dict[k], aug2_img_dict[k]], dim=0)
             
-        merged_bp = None
-        if batch_positions is not None:
-            merged_bp = {}
-            for k, v in batch_positions.items():
-                merged_bp[k] = torch.cat([v, v], dim=0) if isinstance(v, torch.Tensor) else v
+        merged_bp = self._concat_bp(batch_positions, batch_positions)
 
         z_merged_list = model(merged_img_dict, batch_positions=merged_bp, mask_modalities=all_masks, return_projected=True)
 
