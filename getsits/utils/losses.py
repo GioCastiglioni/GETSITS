@@ -754,13 +754,25 @@ class UnifiedCoMMLoss(nn.Module):
         modalities = list(aug1_img_dict.keys())
         all_masks = self.gen_all_possible_masks(len(modalities))
 
-        z1_list = model(aug1_img_dict, batch_positions=batch_positions, mask_modalities=all_masks, return_projected=True)
-        z2_list = model(aug2_img_dict, batch_positions=batch_positions, mask_modalities=all_masks, return_projected=True)
+        merged_img_dict = {}
+        for k in modalities:
+            merged_img_dict[k] = torch.cat([aug1_img_dict[k], aug2_img_dict[k]], dim=0)
+            
+        merged_bp = None
+        if batch_positions is not None:
+            merged_bp = {}
+            for k, v in batch_positions.items():
+                merged_bp[k] = torch.cat([v, v], dim=0) if isinstance(v, torch.Tensor) else v
 
-        z1_list = [F.normalize(z, p=2, dim=-1) for z in z1_list]
-        z2_list = [F.normalize(z, p=2, dim=-1) for z in z2_list]
+        z_merged_list = model(merged_img_dict, batch_positions=merged_bp, mask_modalities=all_masks, return_projected=True)
 
-        # Assumes input_bands dictionary maintains the order: optical (idx 0) and sar (idx 1)
+        z1_list, z2_list = [], []
+        for z in z_merged_list:
+            z_norm = F.normalize(z, p=2, dim=-1)
+            z1, z2 = torch.chunk(z_norm, 2, dim=0)
+            z1_list.append(z1)
+            z2_list.append(z2)
+
         z1_opt_local, z1_sar_local, z1_proto_local = z1_list
         z2_opt_local, z2_sar_local, z2_proto_local = z2_list
 
@@ -824,11 +836,21 @@ class LeJEPA_CoMMLoss(nn.Module):
         modalities = list(aug1_img_dict.keys())
         all_masks = self.gen_all_possible_masks(len(modalities))
 
-        z1_list = model(aug1_img_dict, batch_positions=batch_positions, mask_modalities=all_masks, return_projected=True)
-        z2_list = model(aug2_img_dict, batch_positions=batch_positions, mask_modalities=all_masks, return_projected=True)
+        merged_img_dict = {}
+        for k in modalities:
+            merged_img_dict[k] = torch.cat([aug1_img_dict[k], aug2_img_dict[k]], dim=0)
+            
+        merged_bp = None
+        if batch_positions is not None:
+            merged_bp = {}
+            for k, v in batch_positions.items():
+                merged_bp[k] = torch.cat([v, v], dim=0) if isinstance(v, torch.Tensor) else v
 
-        z1_opt_local, z1_sar_local, z1_proto_local = z1_list
-        z2_opt_local, z2_sar_local, z2_proto_local = z2_list
+        z_merged_list = model(merged_img_dict, batch_positions=merged_bp, mask_modalities=all_masks, return_projected=True)
+
+        z1_opt_local, z2_opt_local = torch.chunk(z_merged_list[0], 2, dim=0)
+        z1_sar_local, z2_sar_local = torch.chunk(z_merged_list[1], 2, dim=0)
+        z1_proto_local, z2_proto_local = torch.chunk(z_merged_list[2], 2, dim=0)
 
         z1_opt = all_gather_with_grad(z1_opt_local)
         z1_sar = all_gather_with_grad(z1_sar_local)

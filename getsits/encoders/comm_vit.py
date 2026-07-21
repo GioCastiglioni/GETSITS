@@ -432,10 +432,15 @@ class MMFusion(Encoder):
                 out_spatial_list.append(spatial_map)
             
             if return_projected:
-                # Proyectamos la última capa y guardamos el vector
-                all_z_projected.append(self.projector(out_spatial_list[-1]))
+                f_final = layer_features[-1]
+                
+                if self.pool == "cls" and self.fusion == "concat":
+                    pooled = f_final[:, 0, :]
+                else:
+                    pooled = f_final.mean(dim=1)
+                
+                all_z_projected.append(self.projector(pooled.unsqueeze(-1).unsqueeze(-1)))
             else:
-                # Si no estamos en preentrenamiento contrastivo, guardamos la lista espacial
                 final_spatial_list = out_spatial_list
 
         # --- Retorno final ---
