@@ -722,16 +722,13 @@ class UnifiedCoMMLoss(nn.Module):
         self.temperature = temperature
         self.INF = 1e8
 
-    def _concat_dicts(self, dicts):
-        out = {}
-        for k in dicts[0].keys():
-            if isinstance(dicts[0][k], torch.Tensor):
-                out[k] = torch.cat([d[k] for d in dicts], dim=0)
-            elif isinstance(dicts[0][k], dict):
-                out[k] = self._concat_dicts([d[k] for d in dicts])
-            else:
-                out[k] = dicts[0][k]
-        return out
+    def gen_all_possible_masks(self, n_mod: int):
+        masks = []
+        for L in range(n_mod):
+            mask = [s == L for s in range(n_mod)]
+            masks.append(mask)
+        masks.append([True for _ in range(n_mod)])
+        return masks
 
     def infonce(self, z1, z2):
         N = len(z1)
@@ -754,38 +751,18 @@ class UnifiedCoMMLoss(nn.Module):
         return loss
 
     def forward(self, model, orig_img_dict, aug1_img_dict, aug2_img_dict, batch_positions=None):
-        def isolate_modality(img_dict, target_mod=None):
-            out = {}
-            for k, v in img_dict.items():
-                if target_mod is None or k == target_mod:
-                    out[k] = v
-                else:
-                    out[k] = torch.zeros_like(v)
-            return out
+        modalities = list(aug1_img_dict.keys())
+        all_masks = self.gen_all_possible_masks(len(modalities))
 
-        z1_opt_dict = isolate_modality(aug1_img_dict, "optical")
-        z1_sar_dict = isolate_modality(aug1_img_dict, "sar")
-        z1_fus_dict = isolate_modality(aug1_img_dict, None)
+        z1_list = model(aug1_img_dict, batch_positions=batch_positions, mask_modalities=all_masks, return_projected=True)
+        z2_list = model(aug2_img_dict, batch_positions=batch_positions, mask_modalities=all_masks, return_projected=True)
 
-        z2_opt_dict = isolate_modality(aug2_img_dict, "optical")
-        z2_sar_dict = isolate_modality(aug2_img_dict, "sar")
-        z2_fus_dict = isolate_modality(aug2_img_dict, None)
+        z1_list = [F.normalize(z, p=2, dim=-1) for z in z1_list]
+        z2_list = [F.normalize(z, p=2, dim=-1) for z in z2_list]
 
-        merged_img_dict = self._concat_dicts([
-            z1_opt_dict, z1_sar_dict, z1_fus_dict,
-            z2_opt_dict, z2_sar_dict, z2_fus_dict
-        ])
-        
-        merged_bp = None
-        if batch_positions is not None:
-            merged_bp = self._concat_dicts([batch_positions] * 6)
-
-        z_all = model(merged_img_dict, batch_positions=merged_bp, return_projected=True)
-        
-        z_all = F.normalize(z_all, p=2, dim=-1)
-
-        chunk_size_local = z_all.shape[0] // 6
-        z1_opt_local, z1_sar_local, z1_proto_local, z2_opt_local, z2_sar_local, z2_proto_local = torch.split(z_all, chunk_size_local, dim=0)
+        # Assumes input_bands dictionary maintains the order: optical (idx 0) and sar (idx 1)
+        z1_opt_local, z1_sar_local, z1_proto_local = z1_list
+        z2_opt_local, z2_sar_local, z2_proto_local = z2_list
 
         z1_opt = all_gather_with_grad(z1_opt_local)
         z1_sar = all_gather_with_grad(z1_sar_local)
@@ -834,55 +811,24 @@ class LeJEPA_CoMMLoss(nn.Module):
             return 1.0 - correntropy.mean()
         
         return mse.mean()
-
-    def _concat_dicts(self, dicts):
-        out = {}
-        for k in dicts[0].keys():
-            if isinstance(dicts[0][k], torch.Tensor):
-                out[k] = torch.cat([d[k] for d in dicts], dim=0)
-            elif isinstance(dicts[0][k], dict):
-                out[k] = self._concat_dicts([d[k] for d in dicts])
-            else:
-                out[k] = dicts[0][k]
-        return out
+    
+    def gen_all_possible_masks(self, n_mod: int):
+        masks = []
+        for L in range(n_mod):
+            mask = [s == L for s in range(n_mod)]
+            masks.append(mask)
+        masks.append([True for _ in range(n_mod)])
+        return masks
 
     def forward(self, model, orig_img_dict, aug1_img_dict, aug2_img_dict, batch_positions=None):
-        def isolate_modality(img_dict, target_mod=None):
-            out = {}
-            for k, v in img_dict.items():
-                if target_mod is None or k == target_mod:
-                    out[k] = v
-                else:
-                    out[k] = torch.zeros_like(v)
-            return out
+        modalities = list(aug1_img_dict.keys())
+        all_masks = self.gen_all_possible_masks(len(modalities))
 
-        z1_opt_dict = isolate_modality(aug1_img_dict, "optical")
-        z1_sar_dict = isolate_modality(aug1_img_dict, "sar")
-        z1_fus_dict = isolate_modality(aug1_img_dict, None)
+        z1_list = model(aug1_img_dict, batch_positions=batch_positions, mask_modalities=all_masks, return_projected=True)
+        z2_list = model(aug2_img_dict, batch_positions=batch_positions, mask_modalities=all_masks, return_projected=True)
 
-        z2_opt_dict = isolate_modality(aug2_img_dict, "optical")
-        z2_sar_dict = isolate_modality(aug2_img_dict, "sar")
-        z2_fus_dict = isolate_modality(aug2_img_dict, None)
-
-        merged_img_dict = self._concat_dicts([
-            z1_opt_dict, z1_sar_dict, z1_fus_dict,
-            z2_opt_dict, z2_sar_dict, z2_fus_dict
-        ])
-        
-        merged_bp = None
-        if batch_positions is not None:
-            merged_bp = self._concat_dicts([batch_positions] * 6)
-
-        # [6B, D, H, W]
-        out_spatial_list = model(merged_img_dict, batch_positions=merged_bp, return_projected=False)
-        z_all_spatial = out_spatial_list[-1] 
-        
-        # [6B, D]
-        z_all_bar = z_all_spatial.mean(dim=(2, 3))
-
-        chunk_size_local = z_all_bar.shape[0] // 6
-        (z1_opt_local, z1_sar_local, z1_proto_local, 
-         z2_opt_local, z2_sar_local, z2_proto_local) = torch.split(z_all_bar, chunk_size_local, dim=0)
+        z1_opt_local, z1_sar_local, z1_proto_local = z1_list
+        z2_opt_local, z2_sar_local, z2_proto_local = z2_list
 
         z1_opt = all_gather_with_grad(z1_opt_local)
         z1_sar = all_gather_with_grad(z1_sar_local)

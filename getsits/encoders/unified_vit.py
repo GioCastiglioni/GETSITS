@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from collections import OrderedDict
 from timm.models.vision_transformer import Block
 from torch.utils.checkpoint import checkpoint
 
@@ -190,17 +191,17 @@ class UnifiedMMViT(Encoder):
         
         self.norm = nn.LayerNorm(embed_dim)
 
-        self.projector = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(1),
-            nn.Linear(self.topology[-1], embed_dim),
-            nn.SyncBatchNorm(embed_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(embed_dim, embed_dim),
-            nn.SyncBatchNorm(embed_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(embed_dim, projection_dim)
-        )
+        self.projector = nn.Sequential(OrderedDict([
+            ("avgpool", nn.AdaptiveAvgPool2d(1)),
+            ("flatten", nn.Flatten(1)),
+            ("layer1", nn.Linear(self.topology[-1], embed_dim)),
+            ("bn1", nn.SyncBatchNorm(embed_dim)),
+            ("relu1", nn.ReLU(inplace=True)),
+            ("layer2", nn.Linear(embed_dim, embed_dim)),
+            ("bn2", nn.SyncBatchNorm(embed_dim)),
+            ("relu2", nn.ReLU(inplace=True)),
+            ("layer3", nn.Linear(embed_dim, projection_dim)),
+        ]))
 
         self.modalities_finetune = modalities_finetune if modalities_finetune is not None else {}
         self._freeze_modalities()
