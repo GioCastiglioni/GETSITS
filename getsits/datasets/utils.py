@@ -4,6 +4,8 @@ import rasterio
 import pathlib
 import concurrent.futures
 from google.cloud.storage import Client
+import zipfile
+from tqdm import tqdm
 
 
 def decompress_zip_with_progress(zip_file_path, extract_to_folder=None):
