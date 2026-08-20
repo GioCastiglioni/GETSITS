@@ -6,6 +6,8 @@
 multirun/
 
 logs/
+jepa_scores/
+logger*.*
 aaa_mystuff/
 work-dir/
 outputs/
