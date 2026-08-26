@@ -31,7 +31,7 @@ class DownloadProgressBar:
     
     def __call__(self, block_num, block_size, total_size):
         if self.pbar is None:
-            self.pbar = tqdm.tqdm(desc="Downloading...", total=total_size, unit="b", unit_scale=True, unit_divisor=1024)
+            self.pbar = tqdm(desc="Downloading...", total=total_size, unit="b", unit_scale=True, unit_divisor=1024)
 
         downloaded = block_num * block_size
         if downloaded < total_size:
@@ -82,7 +82,7 @@ def download_bucket_concurrently(bucket_name, destination_directory=""):
         return blob.download_to_filename(path)
 
     results = []
-    with tqdm.tqdm(total=len(blob_file_pairs)) as pbar:
+    with tqdm(total=len(blob_file_pairs)) as pbar:
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = {executor.submit(download_blob_file_pair, arg): arg for arg in blob_file_pairs}
             for future in concurrent.futures.as_completed(futures):
