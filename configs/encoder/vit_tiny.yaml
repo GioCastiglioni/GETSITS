@@ -1,7 +1,7 @@
 _target_: getsits.encoders.vit.VIT_Encoder
 model_name: "ViT-Tiny"
 encoder_weights: ./pretrained_models/vit_t_getsits.pth
-download_url: https://huggingface.co/GioCastiglioni/GETSITS/resolve/main/models/vit_t_getsits.pth
+download_url: null
 
 embed_dim: 192
 input_size: 224
